@@ -494,10 +494,12 @@ func (c *Client) handleHeartbeatAck(hdr protocol.Header, payload []byte) {
 		c.mu.Unlock()
 		atomic.StoreInt32(&c.registered, 1)
 
-		log.WithFields(log.Fields{
-			"virtualIP": ack.AssignedIP.String(),
-			"prefixLen": ack.PrefixLen,
-		}).Info("registered with server")
+		if !wasRegistered {
+			log.WithFields(log.Fields{
+				"virtualIP": ack.AssignedIP.String(),
+				"prefixLen": ack.PrefixLen,
+			}).Info("registered with server")
+		}
 
 		// Auto-assign mode: first OK ack, TUN not yet created.
 		if !wasRegistered && c.tunDev == nil {
