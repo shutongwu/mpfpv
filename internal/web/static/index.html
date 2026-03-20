@@ -301,6 +301,8 @@ button.danger:hover { background: #4a1525; border-color: #f85149; }
     html += '<div class="form-group"><label>Team Key</label>';
     html += '<input type="text" id="cfg-teamkey" placeholder="my-team-key"></div>';
     html += '</div>';
+    html += '<div class="form-group"><label>Network Adapter</label>';
+    html += '<select id="cfg-iface"><option value="">Loading...</option></select></div>';
     html += '<div style="margin-top:8px">';
     html += '<button class="save-btn" onclick="mpfpv.saveConfig()">Save</button>';
     html += '<span class="save-msg" id="save-msg"></span>';
@@ -312,6 +314,21 @@ button.danger:hover { background: #4a1525; border-color: #f85149; }
   var cachedConfig = null;
 
   function loadConfigValues() {
+    // Load available network adapters
+    fetch('/api/available-interfaces').then(function(r) { return r.json(); }).then(function(ifaces) {
+      var sel = document.getElementById('cfg-iface');
+      if (!sel) return;
+      var savedBind = (cachedConfig && cachedConfig.client && cachedConfig.client.bindInterface) || '';
+      sel.innerHTML = '';
+      for (var i = 0; i < ifaces.length; i++) {
+        var opt = document.createElement('option');
+        opt.value = ifaces[i].name;
+        opt.textContent = ifaces[i].name + ' (' + ifaces[i].addrs.join(', ') + ')';
+        if (ifaces[i].name === savedBind) opt.selected = true;
+        sel.appendChild(opt);
+      }
+    }).catch(function() {});
+
     if (cachedConfig) {
       applyConfigToForm(cachedConfig);
       return;
@@ -549,7 +566,7 @@ button.danger:hover { background: #4a1525; border-color: #f85149; }
     saveConfig: function() {
       var serverAddr = document.getElementById('cfg-server').value.trim();
       var teamKey = document.getElementById('cfg-teamkey').value.trim();
-      // Reuse existing clientID if saved, otherwise generate a random one (100-65000)
+      var bindIface = document.getElementById('cfg-iface').value;
       var clientID = (cachedConfig && cachedConfig.client && cachedConfig.client.clientID > 0)
         ? cachedConfig.client.clientID
         : (Math.floor(Math.random() * 64900) + 100);
@@ -561,6 +578,7 @@ button.danger:hover { background: #4a1525; border-color: #f85149; }
           clientID: clientID,
           serverAddr: serverAddr,
           sendMode: 'redundant',
+          bindInterface: bindIface,
           mtu: 1300,
           dedupWindow: 4096,
           excludedInterfaces: ['lo']

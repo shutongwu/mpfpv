@@ -137,10 +137,25 @@ func (c *Client) setupTUN() error {
 
 // Run starts the client. It blocks until ctx is cancelled.
 func (c *Client) Run(ctx context.Context) error {
-	// Try to create MultiPathSender for multi-NIC support.
-	// Skip multipath when the server is on loopback — bound sockets (SO_BINDTODEVICE)
-	// cannot reach 127.0.0.0/8 since loopback traffic stays on the lo interface.
-	if !c.serverAddr.IP.IsLoopback() {
+	// If a specific interface is configured (e.g. Windows GUI), use single
+	// socket mode bound to that interface's address. No multipath.
+	if c.cfg.Client.BindInterface != "" {
+		localAddr, err := resolveInterfaceAddr(c.cfg.Client.BindInterface)
+		if err != nil {
+			return fmt.Errorf("client: bind interface %q: %w", c.cfg.Client.BindInterface, err)
+		}
+		conn, err := net.ListenUDP("udp", &net.UDPAddr{IP: localAddr})
+		if err != nil {
+			return fmt.Errorf("client: listen UDP on %s: %w", localAddr, err)
+		}
+		c.conn = conn
+		defer conn.Close()
+		log.WithFields(log.Fields{
+			"iface": c.cfg.Client.BindInterface,
+			"addr":  localAddr,
+		}).Info("client: single NIC mode")
+	} else if !c.serverAddr.IP.IsLoopback() {
+		// Try to create MultiPathSender for multi-NIC support.
 		mp, err := transport.NewMultiPathSender(c.serverAddr, c.sendMode, c.cfg.Client.ExcludedInterfaces)
 		if err == nil {
 			if startErr := mp.Start(); startErr == nil {
@@ -155,15 +170,15 @@ func (c *Client) Run(ctx context.Context) error {
 		}
 	}
 
-	// If multipath is not available, fall back to single UDP socket.
-	if !c.useMultipath {
+	// If neither bind-interface nor multipath, use an unbound socket.
+	if !c.useMultipath && c.conn == nil {
 		conn, err := net.ListenUDP("udp", nil)
 		if err != nil {
 			return fmt.Errorf("client: listen UDP: %w", err)
 		}
 		c.conn = conn
 		defer conn.Close()
-	} else {
+	} else if c.useMultipath {
 		defer c.multipath.Stop()
 	}
 
@@ -548,4 +563,29 @@ func (c *Client) IsRegistered() bool {
 // Multipath returns the MultiPathSender if multipath mode is active, or nil.
 func (c *Client) Multipath() *transport.MultiPathSender {
 	return c.multipath
+}
+
+// resolveInterfaceAddr finds the first IPv4 address on the named interface.
+func resolveInterfaceAddr(ifaceName string) (net.IP, error) {
+	iface, err := net.InterfaceByName(ifaceName)
+	if err != nil {
+		return nil, fmt.Errorf("interface %q not found: %w", ifaceName, err)
+	}
+	addrs, err := iface.Addrs()
+	if err != nil {
+		return nil, fmt.Errorf("get addrs for %q: %w", ifaceName, err)
+	}
+	for _, addr := range addrs {
+		var ip net.IP
+		switch v := addr.(type) {
+		case *net.IPNet:
+			ip = v.IP
+		case *net.IPAddr:
+			ip = v.IP
+		}
+		if ip4 := ip.To4(); ip4 != nil {
+			return ip4, nil
+		}
+	}
+	return nil, fmt.Errorf("no IPv4 address on interface %q", ifaceName)
 }

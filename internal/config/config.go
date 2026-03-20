@@ -25,6 +25,7 @@ type ClientConfig struct {
 	MTU                int      `yaml:"mtu" json:"mtu"`
 	DedupWindow        int      `yaml:"dedupWindow" json:"dedupWindow"`
 	ExcludedInterfaces []string `yaml:"excludedInterfaces" json:"excludedInterfaces"`
+	BindInterface      string   `yaml:"bindInterface,omitempty" json:"bindInterface,omitempty"` // use only this NIC (Windows GUI)
 	WebUI              string   `yaml:"webUI" json:"webUI"`
 }
 

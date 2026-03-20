@@ -4,6 +4,7 @@ import (
 	"embed"
 	"encoding/json"
 	"io/fs"
+	"net"
 	"net/http"
 	"strconv"
 	"strings"
@@ -252,8 +253,22 @@ func NewHandler(mode string, api interface{}, opts ...interface{}) http.Handler 
 	return mux
 }
 
+// AvailableInterface describes a NIC for the GUI dropdown.
+type AvailableInterface struct {
+	Name  string   `json:"name"`
+	Addrs []string `json:"addrs"`
+}
+
 // registerGUIEndpoints adds config/connect/disconnect API endpoints.
 func registerGUIEndpoints(mux *http.ServeMux, ctrl GUIController) {
+	mux.HandleFunc("/api/available-interfaces", func(w http.ResponseWriter, r *http.Request) {
+		if r.Method != http.MethodGet {
+			http.Error(w, "method not allowed", http.StatusMethodNotAllowed)
+			return
+		}
+		writeJSON(w, listPhysicalInterfaces())
+	})
+
 	mux.HandleFunc("/api/config", func(w http.ResponseWriter, r *http.Request) {
 		switch r.Method {
 		case http.MethodGet:
@@ -314,6 +329,51 @@ func registerGUIEndpoints(mux *http.ServeMux, ctrl GUIController) {
 func StartWebUI(addr string, handler http.Handler) error {
 	log.Infof("web: starting Web UI on %s", addr)
 	return http.ListenAndServe(addr, handler)
+}
+
+// listPhysicalInterfaces returns NICs that look like real hardware.
+func listPhysicalInterfaces() []AvailableInterface {
+	ifaces, err := net.Interfaces()
+	if err != nil {
+		return nil
+	}
+	var result []AvailableInterface
+	for _, iface := range ifaces {
+		if iface.Flags&net.FlagLoopback != 0 || iface.Flags&net.FlagUp == 0 {
+			continue
+		}
+		addrs, err := iface.Addrs()
+		if err != nil {
+			continue
+		}
+		var ipv4s []string
+		for _, addr := range addrs {
+			var ip net.IP
+			switch v := addr.(type) {
+			case *net.IPNet:
+				ip = v.IP
+			case *net.IPAddr:
+				ip = v.IP
+			}
+			if ip4 := ip.To4(); ip4 != nil {
+				// Skip link-local, CGNAT/Tailscale, our VPN range
+				if ip4[0] == 169 && ip4[1] == 254 {
+					continue
+				}
+				if ip4[0] == 100 && ip4[1] >= 64 && ip4[1] <= 127 {
+					continue
+				}
+				if ip4[0] == 10 && ip4[1] == 99 {
+					continue
+				}
+				ipv4s = append(ipv4s, ip4.String())
+			}
+		}
+		if len(ipv4s) > 0 {
+			result = append(result, AvailableInterface{Name: iface.Name, Addrs: ipv4s})
+		}
+	}
+	return result
 }
 
 // writeJSON serializes v to JSON and writes it to the ResponseWriter.
