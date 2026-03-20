@@ -301,20 +301,8 @@ button.danger:hover { background: #4a1525; border-color: #f85149; }
     html += '<div class="form-group"><label>Team Key</label>';
     html += '<input type="text" id="cfg-teamkey" placeholder="my-team-key"></div>';
     html += '</div>';
-    html += '<div class="form-row">';
-    html += '<div class="form-group"><label>Client ID</label>';
-    html += '<input type="number" id="cfg-clientid" min="1" max="65535" placeholder="1"></div>';
-    html += '<div class="form-group"><label>Send Mode</label>';
-    html += '<select id="cfg-sendmode"><option value="redundant">Redundant</option><option value="failover">Failover</option></select></div>';
-    html += '</div>';
-    html += '<div class="form-row">';
-    html += '<div class="form-group"><label>Virtual IP (optional, leave empty for auto)</label>';
-    html += '<input type="text" id="cfg-virtualip" placeholder="10.99.0.1/24"></div>';
-    html += '<div class="form-group"><label>Excluded Interfaces (comma separated)</label>';
-    html += '<input type="text" id="cfg-excluded" placeholder="eth0,wlan1"></div>';
-    html += '</div>';
     html += '<div style="margin-top:8px">';
-    html += '<button class="save-btn" onclick="mpfpv.saveConfig()">Save Configuration</button>';
+    html += '<button class="save-btn" onclick="mpfpv.saveConfig()">Save</button>';
     html += '<span class="save-msg" id="save-msg"></span>';
     html += '</div>';
     html += '</div>';
@@ -336,23 +324,13 @@ button.danger:hover { background: #4a1525; border-color: #f85149; }
 
   function applyConfigToForm(cfg) {
     var el;
-    if (cfg.client) {
-      el = document.getElementById('cfg-server');
-      if (el && !el._userEdited) el.value = cfg.client.serverAddr || '';
-      el = document.getElementById('cfg-teamkey');
-      if (el && !el._userEdited) el.value = cfg.teamKey || '';
-      el = document.getElementById('cfg-clientid');
-      if (el && !el._userEdited) el.value = cfg.client.clientID || '';
-      el = document.getElementById('cfg-sendmode');
-      if (el && !el._userEdited) el.value = cfg.client.sendMode || 'redundant';
-      el = document.getElementById('cfg-virtualip');
-      if (el && !el._userEdited) el.value = cfg.client.virtualIP || '';
-      el = document.getElementById('cfg-excluded');
-      if (el && !el._userEdited) el.value = (cfg.client.excludedInterfaces || []).join(', ');
-    }
+    el = document.getElementById('cfg-server');
+    if (el && !el._userEdited) el.value = (cfg.client && cfg.client.serverAddr) || '';
+    el = document.getElementById('cfg-teamkey');
+    if (el && !el._userEdited) el.value = cfg.teamKey || '';
 
     // Mark inputs so we don't overwrite user edits on refresh.
-    var inputs = document.querySelectorAll('#config-body input, #config-body select');
+    var inputs = document.querySelectorAll('#config-body input');
     for (var i = 0; i < inputs.length; i++) {
       inputs[i].addEventListener('input', function() { this._userEdited = true; });
     }
@@ -562,11 +540,8 @@ button.danger:hover { background: #4a1525; border-color: #f85149; }
     saveConfig: function() {
       var serverAddr = document.getElementById('cfg-server').value.trim();
       var teamKey = document.getElementById('cfg-teamkey').value.trim();
-      var clientID = parseInt(document.getElementById('cfg-clientid').value, 10) || 1;
-      var sendMode = document.getElementById('cfg-sendmode').value;
-      var virtualIP = document.getElementById('cfg-virtualip').value.trim();
-      var excludedStr = document.getElementById('cfg-excluded').value.trim();
-      var excluded = excludedStr ? excludedStr.split(',').map(function(s) { return s.trim(); }).filter(Boolean) : [];
+      // Auto-generate clientID from cached config or random
+      var clientID = (cachedConfig && cachedConfig.client && cachedConfig.client.clientID) || (Math.floor(Math.random() * 65534) + 1);
 
       var cfg = {
         mode: 'client',
@@ -574,11 +549,10 @@ button.danger:hover { background: #4a1525; border-color: #f85149; }
         client: {
           clientID: clientID,
           serverAddr: serverAddr,
-          sendMode: sendMode,
-          virtualIP: virtualIP,
+          sendMode: 'redundant',
           mtu: 1300,
           dedupWindow: 4096,
-          excludedInterfaces: excluded
+          excludedInterfaces: ['lo']
         }
       };
 
