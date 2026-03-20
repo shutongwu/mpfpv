@@ -2,6 +2,7 @@ package transport
 
 import (
 	"net"
+	"strings"
 	"sync"
 	"time"
 
@@ -134,32 +135,44 @@ func (w *InterfaceWatcher) detectChanges() {
 	}
 }
 
-// isVirtualInterface returns true if the interface name matches common
-// virtual/tunnel device patterns that should never be used as send paths.
-func isVirtualInterface(name string) bool {
-	prefixes := []string{
-		"mpfpv",      // our own TUN device — MUST exclude to prevent packet loops
-		"tun",        // generic TUN devices
-		"tap",        // TAP devices
-		"veth",       // virtual ethernet pairs (Docker, LXC, netns)
-		"vEthernet",  // Windows Hyper-V / WSL2 virtual adapters
-		"br-",        // Docker bridge networks
-		"vmbr",       // Proxmox VE bridges
-		"virbr",      // libvirt bridges
-		"cni",        // Kubernetes CNI
-		"flannel",    // Kubernetes flannel
-		"calico",     // Kubernetes calico
-		"wg",         // WireGuard interfaces
-		"tailscale",  // Tailscale interfaces
-		"Loopback",   // Windows Loopback Adapter
-		"isatap",     // Windows ISATAP tunnel
-		"Teredo",     // Windows Teredo tunnel
+// isPhysicalInterface returns true if the interface name looks like a real
+// physical NIC (WiFi, Ethernet, USB adapter). Everything else is ignored.
+func isPhysicalInterface(name string) bool {
+	// Linux physical NIC patterns
+	linuxPrefixes := []string{
+		"eth",   // traditional ethernet
+		"enp",   // systemd predictable: PCI ethernet
+		"ens",   // systemd predictable: hotplug slot
+		"eno",   // systemd predictable: onboard
+		"enx",   // systemd predictable: MAC-based (USB dongles)
+		"wlan",  // traditional WiFi
+		"wlp",   // systemd predictable: PCI WiFi
+		"wlx",   // systemd predictable: USB WiFi
+		"usb",   // USB network adapters
 	}
-	for _, p := range prefixes {
+	for _, p := range linuxPrefixes {
 		if len(name) >= len(p) && name[:len(p)] == p {
 			return true
 		}
 	}
+
+	// Windows: names contain these keywords (localized names vary)
+	winKeywords := []string{
+		"Wi-Fi", "WiFi", "Wireless", "WLAN",
+		"Ethernet", "以太网",
+		"USB",
+	}
+	for _, kw := range winKeywords {
+		if strings.Contains(name, kw) {
+			return true
+		}
+	}
+
+	// macOS
+	if len(name) >= 2 && name[:2] == "en" {
+		return true
+	}
+
 	return false
 }
 
@@ -181,8 +194,8 @@ func (w *InterfaceWatcher) scanInterfaces() map[string]*InterfaceInfo {
 		if w.excluded[name] {
 			continue
 		}
-		// Skip known virtual/tunnel interfaces to prevent packet loops.
-		if isVirtualInterface(name) {
+		// Only use real physical NICs (WiFi, Ethernet, USB adapters).
+		if !isPhysicalInterface(name) {
 			continue
 		}
 		// Skip loopback.
