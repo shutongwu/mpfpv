@@ -10,35 +10,35 @@ import (
 
 // Config is the top-level configuration.
 type Config struct {
-	Mode    string        `yaml:"mode"`    // "client" or "server"
-	TeamKey string        `yaml:"teamKey"`
-	Client  *ClientConfig `yaml:"client,omitempty"`
-	Server  *ServerConfig `yaml:"server,omitempty"`
+	Mode    string        `yaml:"mode" json:"mode"`
+	TeamKey string        `yaml:"teamKey" json:"teamKey"`
+	Client  *ClientConfig `yaml:"client,omitempty" json:"client,omitempty"`
+	Server  *ServerConfig `yaml:"server,omitempty" json:"server,omitempty"`
 }
 
 // ClientConfig holds client-specific settings.
 type ClientConfig struct {
-	ClientID           uint16   `yaml:"clientID"`
-	VirtualIP          string   `yaml:"virtualIP"`          // "10.99.0.1/24" or empty for auto
-	ServerAddr         string   `yaml:"serverAddr"`         // "203.0.113.1:9800"
-	SendMode           string   `yaml:"sendMode"`           // "redundant" | "failover"
-	MTU                int      `yaml:"mtu"`                // default 1300
-	DedupWindow        int      `yaml:"dedupWindow"`        // default 4096
-	ExcludedInterfaces []string `yaml:"excludedInterfaces"`
-	WebUI              string   `yaml:"webUI"`              // "127.0.0.1:9801" or empty
+	ClientID           uint16   `yaml:"clientID" json:"clientID"`
+	VirtualIP          string   `yaml:"virtualIP" json:"virtualIP"`
+	ServerAddr         string   `yaml:"serverAddr" json:"serverAddr"`
+	SendMode           string   `yaml:"sendMode" json:"sendMode"`
+	MTU                int      `yaml:"mtu" json:"mtu"`
+	DedupWindow        int      `yaml:"dedupWindow" json:"dedupWindow"`
+	ExcludedInterfaces []string `yaml:"excludedInterfaces" json:"excludedInterfaces"`
+	WebUI              string   `yaml:"webUI" json:"webUI"`
 }
 
 // ServerConfig holds server-specific settings.
 type ServerConfig struct {
-	ListenAddr    string `yaml:"listenAddr"`    // "0.0.0.0:9800"
-	VirtualIP     string `yaml:"virtualIP"`     // "10.99.0.254/24"
-	Subnet        string `yaml:"subnet"`        // "10.99.0.0/24"
-	ClientTimeout int    `yaml:"clientTimeout"` // seconds, default 15
-	AddrTimeout   int    `yaml:"addrTimeout"`   // seconds, default 5
-	DedupWindow   int    `yaml:"dedupWindow"`   // default 4096
-	MTU           int    `yaml:"mtu"`           // default 1300
-	IPPoolFile    string `yaml:"ipPoolFile"`    // "ip_pool.json"
-	WebUI         string `yaml:"webUI"`
+	ListenAddr    string `yaml:"listenAddr" json:"listenAddr"`
+	VirtualIP     string `yaml:"virtualIP" json:"virtualIP"`
+	Subnet        string `yaml:"subnet" json:"subnet"`
+	ClientTimeout int    `yaml:"clientTimeout" json:"clientTimeout"`
+	AddrTimeout   int    `yaml:"addrTimeout" json:"addrTimeout"`
+	DedupWindow   int    `yaml:"dedupWindow" json:"dedupWindow"`
+	MTU           int    `yaml:"mtu" json:"mtu"`
+	IPPoolFile    string `yaml:"ipPoolFile" json:"ipPoolFile"`
+	WebUI         string `yaml:"webUI" json:"webUI"`
 }
 
 // SaveConfig writes the config to a YAML file at path.
