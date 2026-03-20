@@ -549,8 +549,10 @@ button.danger:hover { background: #4a1525; border-color: #f85149; }
     saveConfig: function() {
       var serverAddr = document.getElementById('cfg-server').value.trim();
       var teamKey = document.getElementById('cfg-teamkey').value.trim();
-      // Auto-generate clientID from cached config or random
-      var clientID = (cachedConfig && cachedConfig.client && cachedConfig.client.clientID) || (Math.floor(Math.random() * 65534) + 1);
+      // Reuse existing clientID if saved, otherwise generate a random one (100-65000)
+      var clientID = (cachedConfig && cachedConfig.client && cachedConfig.client.clientID > 0)
+        ? cachedConfig.client.clientID
+        : (Math.floor(Math.random() * 64900) + 100);
 
       var cfg = {
         mode: 'client',
