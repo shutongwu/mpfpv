@@ -3,7 +3,9 @@ package client
 import (
 	"context"
 	"fmt"
+	"hash/fnv"
 	"net"
+	"os"
 	"sync"
 	"sync/atomic"
 	"time"
@@ -30,6 +32,7 @@ type Client struct {
 	virtualIP   net.IP
 	prefixLen   uint8
 	sendMode    uint8
+	deviceName  string // device name sent in heartbeats
 	seq         uint32 // atomic; incremented per Send call
 	registered  int32  // atomic bool; 1 = registered
 	tunDev      tunnel.Device
@@ -44,6 +47,14 @@ type Client struct {
 	// when the corresponding HeartbeatAck arrives.
 	lastHeartbeatSent time.Time
 	hbTimeMu          sync.Mutex
+}
+
+// stableClientID generates a deterministic clientID from a device name
+// using FNV-1a hash, in range [100, 65000).
+func stableClientID(name string) uint16 {
+	h := fnv.New32a()
+	h.Write([]byte(name))
+	return uint16(h.Sum32()%64900) + 100
 }
 
 // New creates a new Client from the given config.
@@ -68,20 +79,22 @@ func New(cfg *config.Config) (*Client, error) {
 		sendMode = protocol.SendModeRedundant
 	}
 
-	var virtualIP net.IP
-	var prefixLen uint8
-	if cc.VirtualIP != "" {
-		ip, ipNet, err := net.ParseCIDR(cc.VirtualIP)
-		if err != nil {
-			return nil, fmt.Errorf("client: parse virtualIP %q: %w", cc.VirtualIP, err)
-		}
-		virtualIP = ip.To4()
-		ones, _ := ipNet.Mask.Size()
-		prefixLen = uint8(ones)
-	} else {
-		virtualIP = net.IPv4zero.To4()
-		prefixLen = 0
+	// Resolve device name: config > hostname.
+	deviceName := cc.DeviceName
+	if deviceName == "" {
+		deviceName, _ = os.Hostname()
 	}
+
+	// Auto-generate clientID from device name if not explicitly set.
+	if cc.ClientID == 0 {
+		cc.ClientID = stableClientID(deviceName)
+		log.Infof("client: auto-generated clientID=%d from deviceName=%q", cc.ClientID, deviceName)
+	}
+
+	// VirtualIP is always 0.0.0.0 (server assigns IP).
+	// The VirtualIP config field is kept for backward compat but ignored.
+	virtualIP := net.IPv4zero.To4()
+	var prefixLen uint8
 
 	dedupWindow := cc.DedupWindow
 	if dedupWindow <= 0 {
@@ -96,6 +109,7 @@ func New(cfg *config.Config) (*Client, error) {
 		virtualIP:   virtualIP,
 		prefixLen:   prefixLen,
 		sendMode:    sendMode,
+		deviceName:  deviceName,
 		tunReady:    make(chan struct{}),
 	}
 
@@ -185,16 +199,12 @@ func (c *Client) Run(ctx context.Context) error {
 	log.WithFields(log.Fields{
 		"serverAddr":   c.serverAddr.String(),
 		"clientID":     c.cfg.Client.ClientID,
-		"virtualIP":    c.virtualIP.String(),
+		"deviceName":   c.deviceName,
 		"sendMode":     c.cfg.Client.SendMode,
 		"useMultipath": c.useMultipath,
 	}).Info("client starting")
 
-	// Static IP mode: create TUN immediately.
-	if c.virtualIP != nil && !c.virtualIP.Equal(net.IPv4zero) {
-		c.setupTUN()
-		close(c.tunReady)
-	}
+	// VirtualIP is always 0.0.0.0 (auto-assign); TUN created after first HeartbeatAck.
 
 	// Start goroutines.
 	recvCtx, recvCancel := context.WithCancel(ctx)
@@ -325,7 +335,7 @@ func (c *Client) heartbeatLoop(ctx context.Context) {
 // In multipath mode, heartbeats are sent via ALL paths (SendAll) so the
 // server learns every source address and each path gets RTT probed.
 func (c *Client) sendHeartbeat() error {
-	buf := make([]byte, protocol.HeaderSize+protocol.HeartbeatPayloadSize)
+	buf := make([]byte, protocol.HeaderSize+protocol.HeartbeatPayloadSize+len(c.deviceName))
 
 	seq := atomic.AddUint32(&c.seq, 1) - 1 // first seq = 0
 
@@ -345,7 +355,8 @@ func (c *Client) sendHeartbeat() error {
 		TeamKeyHash: c.teamKeyHash,
 	}
 	c.mu.Unlock()
-	protocol.EncodeHeartbeat(buf[protocol.HeaderSize:], hb)
+	payloadLen := protocol.EncodeHeartbeatWithName(buf[protocol.HeaderSize:], hb, c.deviceName)
+	buf = buf[:protocol.HeaderSize+payloadLen]
 
 	// Record send time for RTT measurement.
 	c.hbTimeMu.Lock()

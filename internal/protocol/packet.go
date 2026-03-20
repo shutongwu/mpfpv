@@ -55,19 +55,37 @@ func EncodeHeartbeat(buf []byte, hb *HeartbeatPayload) {
 	copy(buf[8:16], hb.TeamKeyHash[:])
 }
 
-// DecodeHeartbeat parses a 16-byte heartbeat payload from buf.
+// DecodeHeartbeat parses a heartbeat payload from buf (at least 16 bytes).
+// If buf is longer than 16 bytes, the extra bytes are interpreted as a
+// UTF-8 device name string.
 func DecodeHeartbeat(buf []byte) (HeartbeatPayload, error) {
 	if len(buf) < HeartbeatPayloadSize {
 		return HeartbeatPayload{}, ErrBufferTooShort
 	}
 	var hash [8]byte
 	copy(hash[:], buf[8:16])
-	return HeartbeatPayload{
+	hb := HeartbeatPayload{
 		VirtualIP:   net.IP(append([]byte(nil), buf[0:4]...)),
 		PrefixLen:   buf[4],
 		SendMode:    buf[5],
 		TeamKeyHash: hash,
-	}, nil
+	}
+	if len(buf) > HeartbeatPayloadSize {
+		hb.DeviceName = string(buf[HeartbeatPayloadSize:])
+	}
+	return hb, nil
+}
+
+// EncodeHeartbeatWithName writes a heartbeat payload followed by an optional
+// device name. buf must have at least HeartbeatPayloadSize + len(deviceName)
+// bytes available. Returns the total number of bytes written.
+func EncodeHeartbeatWithName(buf []byte, hb *HeartbeatPayload, deviceName string) int {
+	EncodeHeartbeat(buf, hb)
+	n := HeartbeatPayloadSize
+	if deviceName != "" {
+		n += copy(buf[n:], []byte(deviceName))
+	}
+	return n
 }
 
 // EncodeHeartbeatAck writes ack into the first 8 bytes of buf.

@@ -20,12 +20,13 @@ var staticFS embed.FS
 
 // ClientInfo is a summary of a connected client (server-side).
 type ClientInfo struct {
-	ClientID  uint16 `json:"clientID"`
-	VirtualIP string `json:"virtualIP"`
-	SendMode  string `json:"sendMode"`
-	Online    bool   `json:"online"`
-	LastSeen  string `json:"lastSeen"`
-	AddrCount int    `json:"addrCount"`
+	ClientID   uint16 `json:"clientID"`
+	VirtualIP  string `json:"virtualIP"`
+	DeviceName string `json:"deviceName,omitempty"`
+	SendMode   string `json:"sendMode"`
+	Online     bool   `json:"online"`
+	LastSeen   string `json:"lastSeen"`
+	AddrCount  int    `json:"addrCount"`
 }
 
 // ClientDetailInfo includes full address details for a single client.

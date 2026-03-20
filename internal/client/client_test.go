@@ -21,7 +21,7 @@ func testConfig(serverAddr string) *config.Config {
 		TeamKey: "testkey",
 		Client: &config.ClientConfig{
 			ClientID:    1,
-			VirtualIP:   "10.99.0.1/24",
+			DeviceName:  "test-device",
 			ServerAddr:  serverAddr,
 			SendMode:    "redundant",
 			MTU:         1300,
@@ -96,14 +96,18 @@ func TestNew(t *testing.T) {
 	if err != nil {
 		t.Fatalf("New() error: %v", err)
 	}
-	if c.virtualIP.String() != "10.99.0.1" {
-		t.Errorf("virtualIP = %s, want 10.99.0.1", c.virtualIP)
+	// VirtualIP is always 0.0.0.0 (auto-assign mode).
+	if !c.virtualIP.Equal(net.IPv4zero) {
+		t.Errorf("virtualIP = %s, want 0.0.0.0", c.virtualIP)
 	}
-	if c.prefixLen != 24 {
-		t.Errorf("prefixLen = %d, want 24", c.prefixLen)
+	if c.prefixLen != 0 {
+		t.Errorf("prefixLen = %d, want 0", c.prefixLen)
 	}
 	if c.sendMode != protocol.SendModeRedundant {
 		t.Errorf("sendMode = %d, want %d", c.sendMode, protocol.SendModeRedundant)
+	}
+	if c.deviceName != "test-device" {
+		t.Errorf("deviceName = %q, want %q", c.deviceName, "test-device")
 	}
 	expectedHash := protocol.ComputeTeamKeyHash("testkey")
 	if c.teamKeyHash != expectedHash {
@@ -113,16 +117,52 @@ func TestNew(t *testing.T) {
 
 func TestNew_AutoIP(t *testing.T) {
 	cfg := testConfig("127.0.0.1:9800")
-	cfg.Client.VirtualIP = ""
 	c, err := New(cfg)
 	if err != nil {
 		t.Fatalf("New() error: %v", err)
 	}
+	// VirtualIP is always auto-assign (0.0.0.0).
 	if !c.virtualIP.Equal(net.IPv4zero) {
 		t.Errorf("virtualIP = %s, want 0.0.0.0", c.virtualIP)
 	}
 	if c.prefixLen != 0 {
 		t.Errorf("prefixLen = %d, want 0", c.prefixLen)
+	}
+}
+
+func TestNew_AutoClientID(t *testing.T) {
+	cfg := testConfig("127.0.0.1:9800")
+	cfg.Client.ClientID = 0
+	cfg.Client.DeviceName = "my-drone"
+	c, err := New(cfg)
+	if err != nil {
+		t.Fatalf("New() error: %v", err)
+	}
+	if cfg.Client.ClientID == 0 {
+		t.Error("clientID should have been auto-generated, still 0")
+	}
+	if c.deviceName != "my-drone" {
+		t.Errorf("deviceName = %q, want %q", c.deviceName, "my-drone")
+	}
+	// Same device name should produce same clientID.
+	cfg2 := testConfig("127.0.0.1:9800")
+	cfg2.Client.ClientID = 0
+	cfg2.Client.DeviceName = "my-drone"
+	_, _ = New(cfg2)
+	if cfg.Client.ClientID != cfg2.Client.ClientID {
+		t.Errorf("same device name produced different clientIDs: %d vs %d", cfg.Client.ClientID, cfg2.Client.ClientID)
+	}
+}
+
+func TestNew_DefaultDeviceName(t *testing.T) {
+	cfg := testConfig("127.0.0.1:9800")
+	cfg.Client.DeviceName = ""
+	c, err := New(cfg)
+	if err != nil {
+		t.Fatalf("New() error: %v", err)
+	}
+	if c.deviceName == "" {
+		t.Error("deviceName should default to hostname, got empty")
 	}
 }
 
@@ -145,8 +185,9 @@ func TestHeartbeatEncoding(t *testing.T) {
 		t.Fatalf("New() error: %v", err)
 	}
 
-	// Manually encode what sendHeartbeat would produce.
-	buf := make([]byte, protocol.HeaderSize+protocol.HeartbeatPayloadSize)
+	// Manually encode what sendHeartbeat would produce (with device name).
+	deviceName := c.deviceName
+	buf := make([]byte, protocol.HeaderSize+protocol.HeartbeatPayloadSize+len(deviceName))
 	hdr := &protocol.Header{
 		Version:  protocol.Version1,
 		Type:     protocol.TypeHeartbeat,
@@ -161,7 +202,8 @@ func TestHeartbeatEncoding(t *testing.T) {
 		SendMode:    c.sendMode,
 		TeamKeyHash: c.teamKeyHash,
 	}
-	protocol.EncodeHeartbeat(buf[protocol.HeaderSize:], hb)
+	payloadLen := protocol.EncodeHeartbeatWithName(buf[protocol.HeaderSize:], hb, deviceName)
+	buf = buf[:protocol.HeaderSize+payloadLen]
 
 	// Decode and verify header.
 	decHdr, err := protocol.DecodeHeader(buf)
@@ -178,22 +220,25 @@ func TestHeartbeatEncoding(t *testing.T) {
 		t.Errorf("seq = %d, want 0", decHdr.Seq)
 	}
 
-	// Decode and verify heartbeat payload.
+	// Decode and verify heartbeat payload with device name.
 	decHb, err := protocol.DecodeHeartbeat(buf[protocol.HeaderSize:])
 	if err != nil {
 		t.Fatalf("DecodeHeartbeat error: %v", err)
 	}
-	if !decHb.VirtualIP.Equal(net.IPv4(10, 99, 0, 1)) {
-		t.Errorf("VirtualIP = %s, want 10.99.0.1", decHb.VirtualIP)
+	if !decHb.VirtualIP.Equal(net.IPv4zero) {
+		t.Errorf("VirtualIP = %s, want 0.0.0.0", decHb.VirtualIP)
 	}
-	if decHb.PrefixLen != 24 {
-		t.Errorf("PrefixLen = %d, want 24", decHb.PrefixLen)
+	if decHb.PrefixLen != 0 {
+		t.Errorf("PrefixLen = %d, want 0", decHb.PrefixLen)
 	}
 	if decHb.SendMode != protocol.SendModeRedundant {
 		t.Errorf("SendMode = %d, want %d", decHb.SendMode, protocol.SendModeRedundant)
 	}
 	if decHb.TeamKeyHash != c.teamKeyHash {
 		t.Errorf("TeamKeyHash mismatch")
+	}
+	if decHb.DeviceName != "test-device" {
+		t.Errorf("DeviceName = %q, want %q", decHb.DeviceName, "test-device")
 	}
 }
 

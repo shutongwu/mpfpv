@@ -434,7 +434,7 @@ button.danger:hover { background: #4a1525; border-color: #f85149; }
       html += '<span class="loading">No clients connected</span>';
     } else {
       html += '<table><thead><tr>';
-      html += '<th>Client ID</th><th>Virtual IP</th><th>Send Mode</th><th>Status</th><th>Addrs</th><th>Last Seen</th><th></th>';
+      html += '<th>Client ID</th><th>Device Name</th><th>Virtual IP</th><th>Send Mode</th><th>Status</th><th>Addrs</th><th>Last Seen</th><th></th>';
       html += '</tr></thead><tbody>';
       for (var i = 0; i < clients.length; i++) {
         var c = clients[i];
@@ -444,6 +444,7 @@ button.danger:hover { background: #4a1525; border-color: #f85149; }
         var isExpanded = expandedClient === c.clientID;
         html += '<tr class="' + (isExpanded ? 'expanded' : '') + '" style="cursor:pointer" onclick="mpfpv.toggleClient(' + c.clientID + ')">';
         html += '<td>' + c.clientID + '</td>';
+        html += '<td>' + esc(c.deviceName || '-') + '</td>';
         html += '<td>' + esc(c.virtualIP) + '</td>';
         html += '<td><span class="badge badge-blue">' + esc(c.sendMode) + '</span></td>';
         html += '<td>' + statusBadge + '</td>';
@@ -452,7 +453,7 @@ button.danger:hover { background: #4a1525; border-color: #f85149; }
         html += '<td><button class="danger" onclick="event.stopPropagation(); mpfpv.deleteClient(' + c.clientID + ')">Delete</button></td>';
         html += '</tr>';
         if (isExpanded) {
-          html += '<tr class="detail-row"><td colspan="7" id="detail-' + c.clientID + '"><span class="loading">Loading...</span></td></tr>';
+          html += '<tr class="detail-row"><td colspan="8" id="detail-' + c.clientID + '"><span class="loading">Loading...</span></td></tr>';
         }
       }
       html += '</tbody></table>';
@@ -567,15 +568,11 @@ button.danger:hover { background: #4a1525; border-color: #f85149; }
       var serverAddr = document.getElementById('cfg-server').value.trim();
       var teamKey = document.getElementById('cfg-teamkey').value.trim();
       var bindIface = document.getElementById('cfg-iface').value;
-      var clientID = (cachedConfig && cachedConfig.client && cachedConfig.client.clientID > 0)
-        ? cachedConfig.client.clientID
-        : (Math.floor(Math.random() * 64900) + 100);
-
       var cfg = {
         mode: 'client',
         teamKey: teamKey,
         client: {
-          clientID: clientID,
+          clientID: 0,
           serverAddr: serverAddr,
           sendMode: 'redundant',
           bindInterface: bindIface,

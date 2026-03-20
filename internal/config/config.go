@@ -18,8 +18,9 @@ type Config struct {
 
 // ClientConfig holds client-specific settings.
 type ClientConfig struct {
-	ClientID           uint16   `yaml:"clientID" json:"clientID"`
-	VirtualIP          string   `yaml:"virtualIP" json:"virtualIP"`
+	ClientID           uint16   `yaml:"clientID" json:"clientID"`                               // 0 = auto-generate from DeviceName
+	VirtualIP          string   `yaml:"virtualIP,omitempty" json:"virtualIP,omitempty"`         // deprecated/ignored, kept for YAML compat
+	DeviceName         string   `yaml:"deviceName,omitempty" json:"deviceName,omitempty"`       // optional, defaults to os.Hostname()
 	ServerAddr         string   `yaml:"serverAddr" json:"serverAddr"`
 	SendMode           string   `yaml:"sendMode" json:"sendMode"`
 	MTU                int      `yaml:"mtu" json:"mtu"`
@@ -139,9 +140,7 @@ func (c *Config) Validate() error {
 }
 
 func (cc *ClientConfig) validate() error {
-	if cc.ClientID == 0 {
-		return fmt.Errorf("config: client.clientID must be > 0 (0 is reserved for server)")
-	}
+	// clientID=0 is allowed: it means auto-generate from DeviceName.
 
 	if cc.ServerAddr == "" {
 		return fmt.Errorf("config: client.serverAddr is required")

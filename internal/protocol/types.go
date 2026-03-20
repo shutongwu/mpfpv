@@ -46,12 +46,14 @@ type Header struct {
 	Seq      uint32 // big-endian, per-clientID
 }
 
-// HeartbeatPayload is the 16-byte heartbeat payload.
+// HeartbeatPayload is the 16-byte heartbeat payload, optionally followed
+// by a variable-length device name string.
 type HeartbeatPayload struct {
 	VirtualIP   net.IP   // 4 bytes IPv4
 	PrefixLen   uint8
 	SendMode    uint8
 	TeamKeyHash [8]byte
+	DeviceName  string   // optional, from extended payload (beyond 16 bytes)
 }
 
 // HeartbeatAckPayload is the 8-byte heartbeat ack payload.

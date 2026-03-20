@@ -31,12 +31,13 @@ func (s *Server) GetClients() []web.ClientInfo {
 	for _, sess := range s.sessions {
 		online := now.Sub(sess.LastSeen) < s.clientTimeout
 		clients = append(clients, web.ClientInfo{
-			ClientID:  sess.ClientID,
-			VirtualIP: sess.VirtualIP.String(),
-			SendMode:  sendModeString(sess.SendMode),
-			Online:    online,
-			LastSeen:  sess.LastSeen.Format(time.RFC3339),
-			AddrCount: len(sess.Addrs),
+			ClientID:   sess.ClientID,
+			VirtualIP:  sess.VirtualIP.String(),
+			DeviceName: sess.DeviceName,
+			SendMode:   sendModeString(sess.SendMode),
+			Online:     online,
+			LastSeen:   sess.LastSeen.Format(time.RFC3339),
+			AddrCount:  len(sess.Addrs),
 		})
 	}
 	return clients
@@ -65,12 +66,13 @@ func (s *Server) GetClient(id uint16) *web.ClientDetailInfo {
 
 	return &web.ClientDetailInfo{
 		ClientInfo: web.ClientInfo{
-			ClientID:  sess.ClientID,
-			VirtualIP: sess.VirtualIP.String(),
-			SendMode:  sendModeString(sess.SendMode),
-			Online:    online,
-			LastSeen:  sess.LastSeen.Format(time.RFC3339),
-			AddrCount: len(sess.Addrs),
+			ClientID:   sess.ClientID,
+			VirtualIP:  sess.VirtualIP.String(),
+			DeviceName: sess.DeviceName,
+			SendMode:   sendModeString(sess.SendMode),
+			Online:     online,
+			LastSeen:   sess.LastSeen.Format(time.RFC3339),
+			AddrCount:  len(sess.Addrs),
 		},
 		Addrs: addrs,
 	}
@@ -103,6 +105,7 @@ func (s *Server) DeleteClient(id uint16) error {
 	// Remove from IP pool if auto-allocated.
 	s.ipPoolLock.Lock()
 	delete(s.ipPool, id)
+	delete(s.ipPoolNames, id)
 	s.saveIPPool()
 	s.ipPoolLock.Unlock()
 

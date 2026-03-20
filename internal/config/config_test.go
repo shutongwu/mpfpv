@@ -131,9 +131,12 @@ client:
   clientID: 0
   serverAddr: "1.2.3.4:9800"
 `
-	_, err := LoadConfig(writeTestFile(t, yaml))
-	if err == nil {
-		t.Fatal("expected error for clientID=0")
+	cfg, err := LoadConfig(writeTestFile(t, yaml))
+	if err != nil {
+		t.Fatalf("unexpected error: clientID=0 should be allowed (auto-generate): %v", err)
+	}
+	if cfg.Client.ClientID != 0 {
+		t.Errorf("clientID = %d, want 0", cfg.Client.ClientID)
 	}
 }
 

@@ -26,12 +26,13 @@ type AddrInfo struct {
 
 // ClientSession tracks a connected client.
 type ClientSession struct {
-	ClientID  uint16
-	VirtualIP net.IP
-	PrefixLen uint8
-	SendMode  uint8              // protocol.SendModeRedundant or SendModeFailover
-	Addrs     map[string]*AddrInfo // srcAddr string -> info
-	LastSeen  time.Time
+	ClientID   uint16
+	VirtualIP  net.IP
+	PrefixLen  uint8
+	SendMode   uint8              // protocol.SendModeRedundant or SendModeFailover
+	DeviceName string             // device name reported by client
+	Addrs      map[string]*AddrInfo // srcAddr string -> info
+	LastSeen   time.Time
 }
 
 // Server is the mpfpv relay server.
@@ -59,10 +60,11 @@ type Server struct {
 	prefixLen uint8    // subnet prefix length
 
 	// IP auto-allocation.
-	ipPool     map[uint16]net.IP // clientID -> allocated IP
-	subnet     *net.IPNet        // auto-allocation subnet
-	ipPoolFile string            // persistence file path
-	ipPoolLock sync.Mutex        // protects ipPool
+	ipPool      map[uint16]net.IP  // clientID -> allocated IP
+	ipPoolNames map[uint16]string  // clientID -> device name (for persistence)
+	subnet      *net.IPNet         // auto-allocation subnet
+	ipPoolFile  string             // persistence file path
+	ipPoolLock  sync.Mutex         // protects ipPool and ipPoolNames
 }
 
 // New creates and initializes a Server.
@@ -80,6 +82,7 @@ func New(cfg *config.Config) (*Server, error) {
 		clientTimeout: time.Duration(cfg.Server.ClientTimeout) * time.Second,
 		addrTimeout:   time.Duration(cfg.Server.AddrTimeout) * time.Second,
 		ipPool:        make(map[uint16]net.IP),
+		ipPoolNames:   make(map[uint16]string),
 		ipPoolFile:    cfg.Server.IPPoolFile,
 	}
 
@@ -323,7 +326,7 @@ func (s *Server) handleHeartbeat(hdr protocol.Header, payload []byte, from *net.
 
 		// If virtualIP is 0.0.0.0, auto-assign from pool.
 		if assignedIP.Equal(net.IPv4zero) {
-			allocated, allocPrefix := s.allocateIP(clientID)
+			allocated, allocPrefix := s.allocateIP(clientID, hb.DeviceName)
 			if allocated != nil {
 				assignedIP = allocated
 				assignedPrefix = allocPrefix
@@ -334,12 +337,13 @@ func (s *Server) handleHeartbeat(hdr protocol.Header, payload []byte, from *net.
 		}
 
 		session = &ClientSession{
-			ClientID:  clientID,
-			VirtualIP: assignedIP,
-			PrefixLen: assignedPrefix,
-			SendMode:  hb.SendMode,
-			Addrs:     make(map[string]*AddrInfo),
-			LastSeen:  now,
+			ClientID:   clientID,
+			VirtualIP:  assignedIP,
+			PrefixLen:  assignedPrefix,
+			SendMode:   hb.SendMode,
+			DeviceName: hb.DeviceName,
+			Addrs:      make(map[string]*AddrInfo),
+			LastSeen:   now,
 		}
 		s.sessions[clientID] = session
 
@@ -352,12 +356,15 @@ func (s *Server) handleHeartbeat(hdr protocol.Header, payload []byte, from *net.
 			s.routeLock.Unlock()
 		}
 
-		log.Infof("server: new client registered: clientID=%d virtualIP=%s sendMode=%d from %s",
-			clientID, assignedIP, hb.SendMode, from)
+		log.Infof("server: new client registered: clientID=%d virtualIP=%s sendMode=%d deviceName=%q from %s",
+			clientID, assignedIP, hb.SendMode, hb.DeviceName, from)
 	} else {
 		// Update existing session.
 		session.SendMode = hb.SendMode
 		session.LastSeen = now
+		if hb.DeviceName != "" {
+			session.DeviceName = hb.DeviceName
+		}
 
 		// If client reconnects with 0.0.0.0, use the previously assigned IP.
 		if vip.Equal(net.IPv4zero) && !session.VirtualIP.Equal(net.IPv4zero) {
@@ -542,17 +549,28 @@ func (s *Server) sendHeartbeatAck(to *net.UDPAddr, assignedIP net.IP, prefixLen 
 type ipPoolEntry struct {
 	ClientID uint16 `json:"clientID"`
 	IP       string `json:"ip"`
+	Name     string `json:"name,omitempty"`
 }
 
 // allocateIP assigns a virtual IP to the given clientID from the subnet pool.
 // If the clientID already has an allocation, it returns the existing one.
+// The deviceName is stored alongside the allocation for persistence.
 // Returns nil if allocation is not possible (no subnet configured, pool exhausted).
-func (s *Server) allocateIP(clientID uint16) (net.IP, uint8) {
+func (s *Server) allocateIP(clientID uint16, deviceName ...string) (net.IP, uint8) {
 	s.ipPoolLock.Lock()
 	defer s.ipPoolLock.Unlock()
 
+	// Update device name if provided.
+	if len(deviceName) > 0 && deviceName[0] != "" {
+		s.ipPoolNames[clientID] = deviceName[0]
+	}
+
 	// Check if already allocated.
 	if ip, ok := s.ipPool[clientID]; ok {
+		// Re-save to persist updated device name.
+		if len(deviceName) > 0 && deviceName[0] != "" {
+			s.saveIPPool()
+		}
 		return ip, s.prefixLen
 	}
 
@@ -630,6 +648,9 @@ func (s *Server) loadIPPool() {
 		ip := net.ParseIP(e.IP).To4()
 		if ip != nil {
 			s.ipPool[e.ClientID] = ip
+			if e.Name != "" {
+				s.ipPoolNames[e.ClientID] = e.Name
+			}
 		}
 	}
 
@@ -648,6 +669,7 @@ func (s *Server) saveIPPool() {
 		entries = append(entries, ipPoolEntry{
 			ClientID: cid,
 			IP:       ip.String(),
+			Name:     s.ipPoolNames[cid],
 		})
 	}
 
