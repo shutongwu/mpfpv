@@ -51,9 +51,12 @@ type Client struct {
 
 // stableClientID generates a deterministic clientID from a device name
 // using FNV-1a hash, in range [100, 65000).
+// stableClientID generates a deterministic clientID from device name + machine ID.
+// Same machine always gets the same clientID, even if hostname is shared.
 func stableClientID(name string) uint16 {
 	h := fnv.New32a()
 	h.Write([]byte(name))
+	h.Write([]byte(machineID()))
 	return uint16(h.Sum32()%64900) + 100
 }
 
