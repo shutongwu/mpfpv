@@ -3,6 +3,7 @@ package server
 import (
 	"fmt"
 	"net"
+	"sort"
 	"time"
 
 	"github.com/cloud/mpfpv/internal/config"
@@ -76,6 +77,9 @@ func (s *Server) GetClients() []web.ClientInfo {
 			AddrCount:  len(sess.Addrs),
 		})
 	}
+	sort.Slice(clients, func(i, j int) bool {
+		return clients[i].ClientID < clients[j].ClientID
+	})
 	return clients
 }
 
@@ -161,5 +165,8 @@ func (s *Server) GetRoutes() []web.RouteEntry {
 			ClientID:  clientID,
 		})
 	}
+	sort.Slice(routes, func(i, j int) bool {
+		return routes[i].ClientID < routes[j].ClientID
+	})
 	return routes
 }
