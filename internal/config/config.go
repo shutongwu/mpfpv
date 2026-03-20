@@ -41,6 +41,18 @@ type ServerConfig struct {
 	WebUI         string `yaml:"webUI"`
 }
 
+// SaveConfig writes the config to a YAML file at path.
+func SaveConfig(path string, cfg *Config) error {
+	data, err := yaml.Marshal(cfg)
+	if err != nil {
+		return fmt.Errorf("config: marshal yaml: %w", err)
+	}
+	if err := os.WriteFile(path, data, 0644); err != nil {
+		return fmt.Errorf("config: write file: %w", err)
+	}
+	return nil
+}
+
 // LoadConfig reads a YAML config file and returns a parsed Config.
 func LoadConfig(path string) (*Config, error) {
 	data, err := os.ReadFile(path)

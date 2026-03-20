@@ -2,7 +2,7 @@ VERSION ?= $(shell git describe --tags --always --dirty 2>/dev/null || echo "dev
 LDFLAGS := -ldflags "-s -w -X main.version=$(VERSION)"
 
 .PHONY: all build clean test test-integration \
-	server client client-x86 client-arm client-arm32 client-windows client-darwin client-mipsle \
+	server client client-x86 client-arm client-arm32 client-windows client-windows-gui client-darwin client-mipsle \
 	linux-amd64 linux-arm linux-arm64 linux-mipsle windows-amd64 darwin-arm64
 
 # === Top-level targets ===
@@ -34,6 +34,10 @@ client-arm32:
 client-windows:
 	mkdir -p build/client/windows
 	CGO_ENABLED=0 GOOS=windows GOARCH=amd64 go build $(LDFLAGS) -o build/client/windows/mpfpv-windows-amd64.exe ./cmd/mpfpv/
+
+client-windows-gui:
+	mkdir -p build/client/windows
+	CGO_ENABLED=0 GOOS=windows GOARCH=amd64 go build $(LDFLAGS) -o build/client/windows/mpfpv-gui.exe ./cmd/mpfpv-gui/
 
 client-darwin:
 	mkdir -p build/client/darwin

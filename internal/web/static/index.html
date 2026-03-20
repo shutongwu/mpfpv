@@ -32,6 +32,7 @@ h2 { font-size: 16px; margin: 20px 0 10px; color: #8b949e; text-transform: upper
 .badge-red { background: #4a1525; color: #f85149; }
 .badge-yellow { background: #3d2e00; color: #d29922; }
 .badge-blue { background: #0c2d6b; color: #58a6ff; }
+.badge-gray { background: #21262d; color: #8b949e; }
 
 table { width: 100%; border-collapse: collapse; }
 th { text-align: left; padding: 8px 12px; border-bottom: 2px solid #30363d; color: #8b949e; font-size: 12px; text-transform: uppercase; }
@@ -62,6 +63,71 @@ button.danger:hover { background: #4a1525; border-color: #f85149; }
 .error-msg { color: #f85149; }
 .active-marker { color: #3fb950; font-weight: bold; }
 #mode-label { font-size: 12px; color: #8b949e; margin-left: 8px; }
+
+/* --- GUI-specific styles --- */
+.connect-bar {
+  display: flex; align-items: center; gap: 16px;
+  margin-bottom: 16px; padding: 16px;
+  background: #161b22; border: 1px solid #30363d; border-radius: 6px;
+}
+.connect-btn {
+  padding: 10px 32px; font-size: 16px; font-weight: 600; border-radius: 6px;
+  min-width: 140px; text-align: center;
+}
+.connect-btn.connect {
+  background: #238636; border-color: #2ea043; color: #fff;
+}
+.connect-btn.connect:hover { background: #2ea043; }
+.connect-btn.disconnect {
+  background: #da3633; border-color: #f85149; color: #fff;
+}
+.connect-btn.disconnect:hover { background: #b62324; }
+.connect-btn:disabled {
+  opacity: 0.5; cursor: not-allowed;
+}
+.connect-status {
+  font-size: 14px; flex: 1;
+}
+
+.config-section {
+  margin-bottom: 16px;
+}
+.config-toggle {
+  cursor: pointer; user-select: none; color: #58a6ff; font-size: 14px;
+  display: flex; align-items: center; gap: 6px; margin-bottom: 8px;
+}
+.config-toggle:hover { text-decoration: underline; }
+.config-body { display: none; }
+.config-body.open { display: block; }
+
+.form-group {
+  margin-bottom: 12px;
+}
+.form-group label {
+  display: block; font-size: 12px; color: #8b949e; margin-bottom: 4px;
+  text-transform: uppercase; letter-spacing: 0.5px;
+}
+.form-group input, .form-group select {
+  width: 100%; padding: 8px 10px; font-size: 14px;
+  background: #0d1117; color: #e6edf3;
+  border: 1px solid #30363d; border-radius: 4px;
+}
+.form-group input:focus, .form-group select:focus {
+  outline: none; border-color: #58a6ff;
+}
+.form-row { display: flex; gap: 16px; }
+.form-row .form-group { flex: 1; }
+
+.save-btn {
+  background: #1f6feb; border-color: #1f6feb; color: #fff;
+  padding: 8px 24px; font-size: 14px; font-weight: 600;
+}
+.save-btn:hover { background: #388bfd; }
+.save-msg {
+  display: inline-block; margin-left: 12px; font-size: 12px;
+}
+.save-msg.ok { color: #3fb950; }
+.save-msg.err { color: #f85149; }
 </style>
 </head>
 <body>
@@ -74,10 +140,30 @@ button.danger:hover { background: #4a1525; border-color: #f85149; }
   'use strict';
 
   var mode = null;
+  var guiMode = false; // true when GUI controller APIs are available
   var expandedClient = null;
   var pollTimer = null;
+  var configOpen = false;
 
   function detectMode() {
+    // First, check if GUI controller is available.
+    fetch('/api/connection-status').then(function(res) {
+      if (res.ok) {
+        guiMode = true;
+        mode = 'client';
+        document.getElementById('mode-label').textContent = '(client)';
+        render();
+        startPolling();
+        return;
+      }
+      // Not GUI mode, fall back to normal detection.
+      detectNormalMode();
+    }).catch(function() {
+      detectNormalMode();
+    });
+  }
+
+  function detectNormalMode() {
     fetch('/api/status').then(function(res) {
       if (res.ok) { mode = 'client'; }
       else { mode = 'server'; }
@@ -99,9 +185,180 @@ button.danger:hover { background: #4a1525; border-color: #f85149; }
   }
 
   function doRefresh() {
-    if (mode === 'client') refreshClient();
-    else refreshServer();
+    if (mode === 'client') {
+      if (guiMode) refreshGUIClient();
+      else refreshClient();
+    } else {
+      refreshServer();
+    }
   }
+
+  // --- GUI Client mode (with connect/disconnect/config) ---
+
+  function refreshGUIClient() {
+    Promise.all([
+      fetch('/api/status').then(function(r) { return r.json(); }),
+      fetch('/api/interfaces').then(function(r) { return r.json(); }),
+      fetch('/api/connection-status').then(function(r) { return r.json(); })
+    ]).then(function(results) {
+      renderGUIClient(results[0], results[1], results[2]);
+    }).catch(function(e) {
+      document.getElementById('app').innerHTML = '<p class="error-msg">Failed to fetch status: ' + esc(e.message) + '</p>';
+    });
+  }
+
+  function renderGUIClient(status, ifaces, connStatus) {
+    var isConn = connStatus.connected;
+    var html = '';
+
+    // --- Connection control bar ---
+    html += '<div class="connect-bar">';
+    if (isConn) {
+      html += '<button class="connect-btn disconnect" onclick="mpfpv.disconnect()">Disconnect</button>';
+      html += '<div class="connect-status">';
+      if (status.connected) {
+        html += '<span class="badge badge-green">Connected</span>';
+        html += ' &nbsp; Virtual IP: <strong>' + esc(status.virtualIP || '-') + '</strong>';
+        html += ' &nbsp; Client ID: <strong>' + status.clientID + '</strong>';
+      } else {
+        html += '<span class="badge badge-yellow">Connecting...</span>';
+      }
+      html += '</div>';
+    } else {
+      html += '<button class="connect-btn connect" onclick="mpfpv.connect()">Connect</button>';
+      html += '<div class="connect-status">';
+      html += '<span class="badge badge-gray">Disconnected</span>';
+      if (connStatus.error) {
+        html += ' <span class="error-msg">' + esc(connStatus.error) + '</span>';
+      }
+      html += '</div>';
+    }
+    html += '</div>';
+
+    // --- Config section (collapsible) ---
+    html += '<div class="config-section">';
+    html += '<div class="config-toggle" onclick="mpfpv.toggleConfig()">';
+    html += (configOpen ? '&#9660;' : '&#9654;') + ' Configuration';
+    html += '</div>';
+    html += '<div class="config-body' + (configOpen ? ' open' : '') + '" id="config-body">';
+    html += renderConfigForm();
+    html += '</div></div>';
+
+    // --- Status area (only when connected) ---
+    if (isConn) {
+      // Send mode control
+      html += '<div class="card">';
+      html += '<div class="card-row">';
+      html += '<div class="card-item"><div class="card-label">Send Mode</div><div class="card-value">';
+      html += '<div class="btn-group">';
+      html += '<button class="' + (status.sendMode === 'redundant' ? 'active' : '') + '" onclick="mpfpv.setSendMode(\'redundant\')">Redundant</button>';
+      html += '<button class="' + (status.sendMode === 'failover' ? 'active' : '') + '" onclick="mpfpv.setSendMode(\'failover\')">Failover</button>';
+      html += '</div></div></div>';
+      html += '</div></div>';
+
+      // Interfaces table
+      html += '<h2>Interfaces</h2>';
+      if (!ifaces || ifaces.length === 0) {
+        html += '<div class="card"><span class="loading">No interfaces (single socket mode)</span></div>';
+      } else {
+        html += '<div class="card"><table><thead><tr>';
+        html += '<th>Name</th><th>Local IP</th><th>Status</th><th>RTT</th><th>Active</th><th></th>';
+        html += '</tr></thead><tbody>';
+        for (var i = 0; i < ifaces.length; i++) {
+          var iface = ifaces[i];
+          var statusBadge = iface.status === 'active'
+            ? '<span class="badge badge-green">active</span>'
+            : iface.status === 'suspect'
+              ? '<span class="badge badge-yellow">suspect</span>'
+              : '<span class="badge badge-red">down</span>';
+          var activeMark = iface.isActive ? '<span class="active-marker">&#9679;</span>' : '';
+          html += '<tr>';
+          html += '<td>' + esc(iface.name) + '</td>';
+          html += '<td>' + esc(iface.localIP) + '</td>';
+          html += '<td>' + statusBadge + '</td>';
+          html += '<td>' + esc(iface.rtt) + '</td>';
+          html += '<td>' + activeMark + '</td>';
+          html += '<td><button onclick="mpfpv.toggleIface(\'' + esc(iface.name) + '\')">Toggle</button></td>';
+          html += '</tr>';
+        }
+        html += '</tbody></table></div>';
+      }
+    }
+
+    document.getElementById('app').innerHTML = html;
+
+    // Restore config form values if config panel is open.
+    if (configOpen) {
+      loadConfigValues();
+    }
+  }
+
+  function renderConfigForm() {
+    var html = '<div class="card">';
+    html += '<div class="form-row">';
+    html += '<div class="form-group"><label>Server Address</label>';
+    html += '<input type="text" id="cfg-server" placeholder="203.0.113.1:9800"></div>';
+    html += '<div class="form-group"><label>Team Key</label>';
+    html += '<input type="text" id="cfg-teamkey" placeholder="my-team-key"></div>';
+    html += '</div>';
+    html += '<div class="form-row">';
+    html += '<div class="form-group"><label>Client ID</label>';
+    html += '<input type="number" id="cfg-clientid" min="1" max="65535" placeholder="1"></div>';
+    html += '<div class="form-group"><label>Send Mode</label>';
+    html += '<select id="cfg-sendmode"><option value="redundant">Redundant</option><option value="failover">Failover</option></select></div>';
+    html += '</div>';
+    html += '<div class="form-row">';
+    html += '<div class="form-group"><label>Virtual IP (optional, leave empty for auto)</label>';
+    html += '<input type="text" id="cfg-virtualip" placeholder="10.99.0.1/24"></div>';
+    html += '<div class="form-group"><label>Excluded Interfaces (comma separated)</label>';
+    html += '<input type="text" id="cfg-excluded" placeholder="eth0,wlan1"></div>';
+    html += '</div>';
+    html += '<div style="margin-top:8px">';
+    html += '<button class="save-btn" onclick="mpfpv.saveConfig()">Save Configuration</button>';
+    html += '<span class="save-msg" id="save-msg"></span>';
+    html += '</div>';
+    html += '</div>';
+    return html;
+  }
+
+  var cachedConfig = null;
+
+  function loadConfigValues() {
+    if (cachedConfig) {
+      applyConfigToForm(cachedConfig);
+      return;
+    }
+    fetch('/api/config').then(function(r) { return r.json(); }).then(function(cfg) {
+      cachedConfig = cfg;
+      applyConfigToForm(cfg);
+    }).catch(function() {});
+  }
+
+  function applyConfigToForm(cfg) {
+    var el;
+    if (cfg.client) {
+      el = document.getElementById('cfg-server');
+      if (el && !el._userEdited) el.value = cfg.client.serverAddr || '';
+      el = document.getElementById('cfg-teamkey');
+      if (el && !el._userEdited) el.value = cfg.teamKey || '';
+      el = document.getElementById('cfg-clientid');
+      if (el && !el._userEdited) el.value = cfg.client.clientID || '';
+      el = document.getElementById('cfg-sendmode');
+      if (el && !el._userEdited) el.value = cfg.client.sendMode || 'redundant';
+      el = document.getElementById('cfg-virtualip');
+      if (el && !el._userEdited) el.value = cfg.client.virtualIP || '';
+      el = document.getElementById('cfg-excluded');
+      if (el && !el._userEdited) el.value = (cfg.client.excludedInterfaces || []).join(', ');
+    }
+
+    // Mark inputs so we don't overwrite user edits on refresh.
+    var inputs = document.querySelectorAll('#config-body input, #config-body select');
+    for (var i = 0; i < inputs.length; i++) {
+      inputs[i].addEventListener('input', function() { this._userEdited = true; });
+    }
+  }
+
+  // --- Normal client mode (no GUI controller) ---
 
   function refreshClient() {
     Promise.all([
@@ -162,6 +419,8 @@ button.danger:hover { background: #4a1525; border-color: #f85149; }
 
     document.getElementById('app').innerHTML = html;
   }
+
+  // --- Server mode ---
 
   function refreshServer() {
     Promise.all([
@@ -276,6 +535,71 @@ button.danger:hover { background: #4a1525; border-color: #f85149; }
       fetch('/api/clients/' + id, { method: 'DELETE' })
         .then(function() { if (expandedClient === id) expandedClient = null; doRefresh(); })
         .catch(function(e) { alert('Failed: ' + e.message); });
+    },
+
+    // --- GUI-specific actions ---
+    connect: function() {
+      fetch('/api/connect', { method: 'POST' })
+        .then(function(res) {
+          if (!res.ok) return res.text().then(function(t) { throw new Error(t); });
+          doRefresh();
+        })
+        .catch(function(e) { alert('Connect failed: ' + e.message); });
+    },
+    disconnect: function() {
+      fetch('/api/disconnect', { method: 'POST' })
+        .then(function(res) {
+          if (!res.ok) return res.text().then(function(t) { throw new Error(t); });
+          doRefresh();
+        })
+        .catch(function(e) { alert('Disconnect failed: ' + e.message); });
+    },
+    toggleConfig: function() {
+      configOpen = !configOpen;
+      cachedConfig = null; // reload
+      doRefresh();
+    },
+    saveConfig: function() {
+      var serverAddr = document.getElementById('cfg-server').value.trim();
+      var teamKey = document.getElementById('cfg-teamkey').value.trim();
+      var clientID = parseInt(document.getElementById('cfg-clientid').value, 10) || 1;
+      var sendMode = document.getElementById('cfg-sendmode').value;
+      var virtualIP = document.getElementById('cfg-virtualip').value.trim();
+      var excludedStr = document.getElementById('cfg-excluded').value.trim();
+      var excluded = excludedStr ? excludedStr.split(',').map(function(s) { return s.trim(); }).filter(Boolean) : [];
+
+      var cfg = {
+        mode: 'client',
+        teamKey: teamKey,
+        client: {
+          clientID: clientID,
+          serverAddr: serverAddr,
+          sendMode: sendMode,
+          virtualIP: virtualIP,
+          mtu: 1300,
+          dedupWindow: 4096,
+          excludedInterfaces: excluded
+        }
+      };
+
+      var msgEl = document.getElementById('save-msg');
+      fetch('/api/config', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify(cfg)
+      }).then(function(res) {
+        if (!res.ok) return res.text().then(function(t) { throw new Error(t); });
+        return res.json();
+      }).then(function() {
+        if (msgEl) { msgEl.textContent = 'Saved!'; msgEl.className = 'save-msg ok'; }
+        cachedConfig = cfg;
+        // Clear user-edited flags so next refresh fills values from saved config.
+        var inputs = document.querySelectorAll('#config-body input, #config-body select');
+        for (var i = 0; i < inputs.length; i++) { inputs[i]._userEdited = false; }
+        setTimeout(function() { if (msgEl) msgEl.textContent = ''; }, 3000);
+      }).catch(function(e) {
+        if (msgEl) { msgEl.textContent = 'Error: ' + e.message; msgEl.className = 'save-msg err'; }
+      });
     }
   };
 

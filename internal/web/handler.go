@@ -8,6 +8,7 @@ import (
 	"strconv"
 	"strings"
 
+	"github.com/cloud/mpfpv/internal/config"
 	log "github.com/sirupsen/logrus"
 )
 
@@ -79,11 +80,29 @@ type ClientAPI interface {
 	SetSendMode(mode string) error
 }
 
+// GUIController exposes config/connect/disconnect operations for the GUI client.
+// When set on the handler, it adds /api/config, /api/connect, /api/disconnect,
+// and /api/connection-status endpoints.
+type GUIController interface {
+	GetConfig() *config.Config
+	SaveConfig(cfg *config.Config) error
+	Connect() error
+	Disconnect() error
+	IsConnected() bool
+}
+
+// ConnectionStatusInfo is the response for /api/connection-status.
+type ConnectionStatusInfo struct {
+	Connected bool   `json:"connected"`
+	Error     string `json:"error,omitempty"`
+}
+
 // --- HTTP handler ---
 
 // NewHandler creates an http.Handler that serves the Web UI and JSON API.
 // mode is "server" or "client"; api must implement the corresponding interface.
-func NewHandler(mode string, api interface{}) http.Handler {
+// opts are optional; if a GUIController is passed, GUI control endpoints are registered.
+func NewHandler(mode string, api interface{}, opts ...interface{}) http.Handler {
 	mux := http.NewServeMux()
 
 	// Serve static files from the embedded filesystem.
@@ -92,6 +111,19 @@ func NewHandler(mode string, api interface{}) http.Handler {
 		log.Fatalf("web: failed to create sub filesystem: %v", err)
 	}
 	mux.Handle("/", http.FileServer(http.FS(sub)))
+
+	// Check for optional GUIController.
+	var guiCtrl GUIController
+	for _, o := range opts {
+		if gc, ok := o.(GUIController); ok {
+			guiCtrl = gc
+		}
+	}
+
+	// Register GUI control endpoints if a GUIController is provided.
+	if guiCtrl != nil {
+		registerGUIEndpoints(mux, guiCtrl)
+	}
 
 	if mode == "server" {
 		sapi := api.(ServerAPI)
@@ -218,6 +250,64 @@ func NewHandler(mode string, api interface{}) http.Handler {
 	}
 
 	return mux
+}
+
+// registerGUIEndpoints adds config/connect/disconnect API endpoints.
+func registerGUIEndpoints(mux *http.ServeMux, ctrl GUIController) {
+	mux.HandleFunc("/api/config", func(w http.ResponseWriter, r *http.Request) {
+		switch r.Method {
+		case http.MethodGet:
+			cfg := ctrl.GetConfig()
+			writeJSON(w, cfg)
+		case http.MethodPost:
+			var cfg config.Config
+			if err := json.NewDecoder(r.Body).Decode(&cfg); err != nil {
+				http.Error(w, "invalid JSON: "+err.Error(), http.StatusBadRequest)
+				return
+			}
+			if err := ctrl.SaveConfig(&cfg); err != nil {
+				http.Error(w, err.Error(), http.StatusInternalServerError)
+				return
+			}
+			writeJSON(w, map[string]string{"status": "saved"})
+		default:
+			http.Error(w, "method not allowed", http.StatusMethodNotAllowed)
+		}
+	})
+
+	mux.HandleFunc("/api/connect", func(w http.ResponseWriter, r *http.Request) {
+		if r.Method != http.MethodPost {
+			http.Error(w, "method not allowed", http.StatusMethodNotAllowed)
+			return
+		}
+		if err := ctrl.Connect(); err != nil {
+			http.Error(w, err.Error(), http.StatusInternalServerError)
+			return
+		}
+		writeJSON(w, map[string]string{"status": "connecting"})
+	})
+
+	mux.HandleFunc("/api/disconnect", func(w http.ResponseWriter, r *http.Request) {
+		if r.Method != http.MethodPost {
+			http.Error(w, "method not allowed", http.StatusMethodNotAllowed)
+			return
+		}
+		if err := ctrl.Disconnect(); err != nil {
+			http.Error(w, err.Error(), http.StatusInternalServerError)
+			return
+		}
+		writeJSON(w, map[string]string{"status": "disconnected"})
+	})
+
+	mux.HandleFunc("/api/connection-status", func(w http.ResponseWriter, r *http.Request) {
+		if r.Method != http.MethodGet {
+			http.Error(w, "method not allowed", http.StatusMethodNotAllowed)
+			return
+		}
+		writeJSON(w, ConnectionStatusInfo{
+			Connected: ctrl.IsConnected(),
+		})
+	})
 }
 
 // StartWebUI starts the Web UI HTTP server on the given address.
