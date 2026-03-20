@@ -207,63 +207,69 @@ button.danger:hover { background: #4a1525; border-color: #f85149; }
     });
   }
 
+  var guiInitialized = false;
+
   function renderGUIClient(status, ifaces, connStatus) {
     var isConn = connStatus.connected;
-    var html = '';
 
-    // --- Connection control bar ---
-    html += '<div class="connect-bar">';
-    if (isConn) {
-      html += '<button class="connect-btn disconnect" onclick="mpfpv.disconnect()">Disconnect</button>';
-      html += '<div class="connect-status">';
-      if (status.connected) {
-        html += '<span class="badge badge-green">Connected</span>';
-        html += ' &nbsp; Virtual IP: <strong>' + esc(status.virtualIP || '-') + '</strong>';
-        html += ' &nbsp; Client ID: <strong>' + status.clientID + '</strong>';
-      } else {
-        html += '<span class="badge badge-yellow">Connecting...</span>';
-      }
-      html += '</div>';
-    } else {
-      html += '<button class="connect-btn connect" onclick="mpfpv.connect()">Connect</button>';
-      html += '<div class="connect-status">';
-      html += '<span class="badge badge-gray">Disconnected</span>';
-      if (connStatus.error) {
-        html += ' <span class="error-msg">' + esc(connStatus.error) + '</span>';
-      }
-      html += '</div>';
-    }
-    html += '</div>';
-
-    // --- Config section (collapsible) ---
-    html += '<div class="config-section">';
-    html += '<div class="config-toggle" onclick="mpfpv.toggleConfig()">';
-    html += (configOpen ? '&#9660;' : '&#9654;') + ' Configuration';
-    html += '</div>';
-    html += '<div class="config-body' + (configOpen ? ' open' : '') + '" id="config-body">';
-    html += renderConfigForm();
-    html += '</div></div>';
-
-    // --- Status area (only when connected) ---
-    if (isConn) {
-      // Send mode control
-      html += '<div class="card">';
-      html += '<div class="card-row">';
-      html += '<div class="card-item"><div class="card-label">Send Mode</div><div class="card-value">';
-      html += '<div class="btn-group">';
-      html += '<button class="' + (status.sendMode === 'redundant' ? 'active' : '') + '" onclick="mpfpv.setSendMode(\'redundant\')">Redundant</button>';
-      html += '<button class="' + (status.sendMode === 'failover' ? 'active' : '') + '" onclick="mpfpv.setSendMode(\'failover\')">Failover</button>';
-      html += '</div></div></div>';
+    // First render: build the full layout with stable DOM IDs
+    if (!guiInitialized) {
+      var html = '';
+      html += '<div id="gui-connect-bar"></div>';
+      html += '<div class="config-section">';
+      html += '<div class="config-toggle" onclick="mpfpv.toggleConfig()">';
+      html += '&#9654; Configuration</div>';
+      html += '<div class="config-body" id="config-body">';
+      html += renderConfigForm();
       html += '</div></div>';
+      html += '<div id="gui-status-area"></div>';
+      document.getElementById('app').innerHTML = html;
+      guiInitialized = true;
+      loadConfigValues();
+    }
 
-      // Interfaces table
-      html += '<h2>Interfaces</h2>';
-      if (!ifaces || ifaces.length === 0) {
-        html += '<div class="card"><span class="loading">No interfaces (single socket mode)</span></div>';
+    // Update connect bar (never touches config form)
+    var barHtml = '<div class="connect-bar">';
+    if (isConn) {
+      barHtml += '<button class="connect-btn disconnect" onclick="mpfpv.disconnect()">Disconnect</button>';
+      barHtml += '<div class="connect-status">';
+      if (status.connected) {
+        barHtml += '<span class="badge badge-green">Connected</span>';
+        barHtml += ' &nbsp; Virtual IP: <strong>' + esc(status.virtualIP || '-') + '</strong>';
+        barHtml += ' &nbsp; Client ID: <strong>' + status.clientID + '</strong>';
       } else {
-        html += '<div class="card"><table><thead><tr>';
-        html += '<th>Name</th><th>Local IP</th><th>Status</th><th>RTT</th><th>Active</th><th></th>';
-        html += '</tr></thead><tbody>';
+        barHtml += '<span class="badge badge-yellow">Connecting...</span>';
+      }
+      barHtml += '</div>';
+    } else {
+      barHtml += '<button class="connect-btn connect" onclick="mpfpv.connect()">Connect</button>';
+      barHtml += '<div class="connect-status">';
+      barHtml += '<span class="badge badge-gray">Disconnected</span>';
+      if (connStatus.error) {
+        barHtml += ' <span class="error-msg">' + esc(connStatus.error) + '</span>';
+      }
+      barHtml += '</div>';
+    }
+    barHtml += '</div>';
+    document.getElementById('gui-connect-bar').innerHTML = barHtml;
+
+    // Update status area (only when connected)
+    var statusHtml = '';
+    if (isConn) {
+      statusHtml += '<div class="card"><div class="card-row">';
+      statusHtml += '<div class="card-item"><div class="card-label">Send Mode</div><div class="card-value">';
+      statusHtml += '<div class="btn-group">';
+      statusHtml += '<button class="' + (status.sendMode === 'redundant' ? 'active' : '') + '" onclick="mpfpv.setSendMode(\'redundant\')">Redundant</button>';
+      statusHtml += '<button class="' + (status.sendMode === 'failover' ? 'active' : '') + '" onclick="mpfpv.setSendMode(\'failover\')">Failover</button>';
+      statusHtml += '</div></div></div></div></div>';
+
+      statusHtml += '<h2>Interfaces</h2>';
+      if (!ifaces || ifaces.length === 0) {
+        statusHtml += '<div class="card"><span class="loading">No interfaces (single socket mode)</span></div>';
+      } else {
+        statusHtml += '<div class="card"><table><thead><tr>';
+        statusHtml += '<th>Name</th><th>Local IP</th><th>Status</th><th>RTT</th><th>Active</th><th></th>';
+        statusHtml += '</tr></thead><tbody>';
         for (var i = 0; i < ifaces.length; i++) {
           var iface = ifaces[i];
           var statusBadge = iface.status === 'active'
@@ -272,25 +278,19 @@ button.danger:hover { background: #4a1525; border-color: #f85149; }
               ? '<span class="badge badge-yellow">suspect</span>'
               : '<span class="badge badge-red">down</span>';
           var activeMark = iface.isActive ? '<span class="active-marker">&#9679;</span>' : '';
-          html += '<tr>';
-          html += '<td>' + esc(iface.name) + '</td>';
-          html += '<td>' + esc(iface.localIP) + '</td>';
-          html += '<td>' + statusBadge + '</td>';
-          html += '<td>' + esc(iface.rtt) + '</td>';
-          html += '<td>' + activeMark + '</td>';
-          html += '<td><button onclick="mpfpv.toggleIface(\'' + esc(iface.name) + '\')">Toggle</button></td>';
-          html += '</tr>';
+          statusHtml += '<tr>';
+          statusHtml += '<td>' + esc(iface.name) + '</td>';
+          statusHtml += '<td>' + esc(iface.localIP) + '</td>';
+          statusHtml += '<td>' + statusBadge + '</td>';
+          statusHtml += '<td>' + esc(iface.rtt) + '</td>';
+          statusHtml += '<td>' + activeMark + '</td>';
+          statusHtml += '<td><button onclick="mpfpv.toggleIface(\'' + esc(iface.name) + '\')">Toggle</button></td>';
+          statusHtml += '</tr>';
         }
-        html += '</tbody></table></div>';
+        statusHtml += '</tbody></table></div>';
       }
     }
-
-    document.getElementById('app').innerHTML = html;
-
-    // Restore config form values if config panel is open.
-    if (configOpen) {
-      loadConfigValues();
-    }
+    document.getElementById('gui-status-area').innerHTML = statusHtml;
   }
 
   function renderConfigForm() {
@@ -534,8 +534,17 @@ button.danger:hover { background: #4a1525; border-color: #f85149; }
     },
     toggleConfig: function() {
       configOpen = !configOpen;
-      cachedConfig = null; // reload
-      doRefresh();
+      var body = document.getElementById('config-body');
+      var toggle = body ? body.previousElementSibling : null;
+      if (body) {
+        body.className = configOpen ? 'config-body open' : 'config-body';
+      }
+      if (toggle) {
+        toggle.innerHTML = (configOpen ? '&#9660;' : '&#9654;') + ' Configuration';
+      }
+      if (configOpen && !cachedConfig) {
+        loadConfigValues();
+      }
     },
     saveConfig: function() {
       var serverAddr = document.getElementById('cfg-server').value.trim();
