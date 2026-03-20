@@ -144,6 +144,9 @@ button.danger:hover { background: #4a1525; border-color: #f85149; }
   var expandedClient = null;
   var pollTimer = null;
   var configOpen = false;
+  var serverConfigOpen = false;
+  var serverInitialized = false;
+  var serverHasConfigAPI = false;
 
   function detectMode() {
     // First, check if GUI controller is available.
@@ -418,6 +421,21 @@ button.danger:hover { background: #4a1525; border-color: #f85149; }
   // --- Server mode ---
 
   function refreshServer() {
+    // On first refresh, probe for server-config API availability.
+    if (!serverInitialized) {
+      fetch('/api/server-config').then(function(r) {
+        if (r.ok) {
+          serverHasConfigAPI = true;
+          return r.json();
+        }
+        return null;
+      }).then(function(cfg) {
+        if (cfg) {
+          applyServerConfigToForm(cfg);
+        }
+      }).catch(function() {});
+    }
+
     Promise.all([
       fetch('/api/clients').then(function(r) { return r.json(); }),
       fetch('/api/routes').then(function(r) { return r.json(); })
@@ -428,7 +446,64 @@ button.danger:hover { background: #4a1525; border-color: #f85149; }
     });
   }
 
+  function renderServerConfigForm() {
+    var html = '<div class="card">';
+    html += '<div class="form-row">';
+    html += '<div class="form-group"><label>Team Key</label>';
+    html += '<input type="text" id="srv-teamkey" placeholder="my-team-key"></div>';
+    html += '<div class="form-group"><label>Listen Address</label>';
+    html += '<input type="text" id="srv-port" placeholder="0.0.0.0:9800"></div>';
+    html += '</div>';
+    html += '<div style="margin-top:8px">';
+    html += '<button class="save-btn" onclick="mpfpv.saveServerConfig()">Save</button>';
+    html += '<span class="save-msg" id="srv-save-msg"></span>';
+    html += '</div>';
+    html += '</div>';
+    return html;
+  }
+
+  function applyServerConfigToForm(cfg) {
+    var el;
+    el = document.getElementById('srv-teamkey');
+    if (el && !el._userEdited) el.value = cfg.teamKey || '';
+    el = document.getElementById('srv-port');
+    if (el && !el._userEdited) el.value = cfg.listenAddr || '';
+
+    // Mark inputs so we don't overwrite user edits on refresh.
+    var inputs = document.querySelectorAll('#server-config-body input');
+    for (var i = 0; i < inputs.length; i++) {
+      inputs[i].addEventListener('input', function() { this._userEdited = true; });
+    }
+  }
+
   function renderServer(clients, routes) {
+    // First render: build stable DOM layout
+    if (!serverInitialized) {
+      var layoutHtml = '';
+      if (serverHasConfigAPI) {
+        layoutHtml += '<div class="config-section">';
+        layoutHtml += '<div class="config-toggle" onclick="mpfpv.toggleServerConfig()">';
+        layoutHtml += '&#9654; Server Configuration</div>';
+        layoutHtml += '<div class="config-body" id="server-config-body">';
+        layoutHtml += renderServerConfigForm();
+        layoutHtml += '</div></div>';
+      }
+      layoutHtml += '<div id="srv-data-area"></div>';
+      document.getElementById('app').innerHTML = layoutHtml;
+      serverInitialized = true;
+
+      if (serverHasConfigAPI) {
+        // Re-load config values into the now-created form
+        fetch('/api/server-config').then(function(r) {
+          if (r.ok) return r.json();
+          return null;
+        }).then(function(cfg) {
+          if (cfg) applyServerConfigToForm(cfg);
+        }).catch(function() {});
+      }
+    }
+
+    // Update only the data area (clients + routes), leaving config form untouched
     var html = '<h2>Clients</h2><div class="card">';
     if (!clients || clients.length === 0) {
       html += '<span class="loading">No clients connected</span>';
@@ -473,7 +548,7 @@ button.danger:hover { background: #4a1525; border-color: #f85149; }
     }
     html += '</div>';
 
-    document.getElementById('app').innerHTML = html;
+    document.getElementById('srv-data-area').innerHTML = html;
 
     if (expandedClient !== null) {
       loadClientDetail(expandedClient);
@@ -563,6 +638,47 @@ button.danger:hover { background: #4a1525; border-color: #f85149; }
       if (configOpen && !cachedConfig) {
         loadConfigValues();
       }
+    },
+    toggleServerConfig: function() {
+      serverConfigOpen = !serverConfigOpen;
+      var body = document.getElementById('server-config-body');
+      var toggle = body ? body.previousElementSibling : null;
+      if (body) {
+        body.className = serverConfigOpen ? 'config-body open' : 'config-body';
+      }
+      if (toggle) {
+        toggle.innerHTML = (serverConfigOpen ? '&#9660;' : '&#9654;') + ' Server Configuration';
+      }
+    },
+    saveServerConfig: function() {
+      var teamKey = document.getElementById('srv-teamkey').value.trim();
+      var listenAddr = document.getElementById('srv-port').value.trim();
+      var msgEl = document.getElementById('srv-save-msg');
+
+      fetch('/api/server-config', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ teamKey: teamKey, listenAddr: listenAddr })
+      }).then(function(res) {
+        if (!res.ok) return res.text().then(function(t) { throw new Error(t); });
+        return res.json();
+      }).then(function() {
+        // Check if listenAddr changed from the original value.
+        var note = '';
+        fetch('/api/server-config').then(function(r) { return r.json(); }).then(function(cfg) {
+          // listenAddr is already saved, just inform user.
+          if (msgEl) {
+            msgEl.textContent = 'Saved! Listen address change requires restart.';
+            msgEl.className = 'save-msg ok';
+          }
+          // Clear user-edited flags.
+          var inputs = document.querySelectorAll('#server-config-body input');
+          for (var i = 0; i < inputs.length; i++) { inputs[i]._userEdited = false; }
+          setTimeout(function() { if (msgEl) msgEl.textContent = ''; }, 5000);
+        }).catch(function() {});
+      }).catch(function(e) {
+        if (msgEl) { msgEl.textContent = 'Error: ' + e.message; msgEl.className = 'save-msg err'; }
+      });
     },
     saveConfig: function() {
       var serverAddr = document.getElementById('cfg-server').value.trim();

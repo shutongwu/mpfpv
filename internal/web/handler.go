@@ -64,6 +64,12 @@ type RouteEntry struct {
 	ClientID  uint16 `json:"clientID"`
 }
 
+// ServerConfigInfo holds the server's editable configuration.
+type ServerConfigInfo struct {
+	TeamKey    string `json:"teamKey"`
+	ListenAddr string `json:"listenAddr"`
+}
+
 // --- Interfaces that Server/Client must implement ---
 
 // ServerAPI exposes server state to the Web UI.
@@ -72,6 +78,12 @@ type ServerAPI interface {
 	GetClient(id uint16) *ClientDetailInfo
 	DeleteClient(id uint16) error
 	GetRoutes() []RouteEntry
+}
+
+// ServerConfigAPI exposes server config read/write to the Web UI.
+type ServerConfigAPI interface {
+	GetServerConfig() ServerConfigInfo
+	UpdateServerConfig(teamKey, listenAddr string) error
 }
 
 // ClientAPI exposes client state to the Web UI.
@@ -114,11 +126,15 @@ func NewHandler(mode string, api interface{}, opts ...interface{}) http.Handler 
 	}
 	mux.Handle("/", http.FileServer(http.FS(sub)))
 
-	// Check for optional GUIController.
+	// Check for optional controllers.
 	var guiCtrl GUIController
+	var srvCfgAPI ServerConfigAPI
 	for _, o := range opts {
 		if gc, ok := o.(GUIController); ok {
 			guiCtrl = gc
+		}
+		if sc, ok := o.(ServerConfigAPI); ok {
+			srvCfgAPI = sc
 		}
 	}
 
@@ -177,6 +193,29 @@ func NewHandler(mode string, api interface{}, opts ...interface{}) http.Handler 
 			}
 			writeJSON(w, sapi.GetRoutes())
 		})
+
+		// Register server config endpoint if ServerConfigAPI is provided.
+		if srvCfgAPI != nil {
+			mux.HandleFunc("/api/server-config", func(w http.ResponseWriter, r *http.Request) {
+				switch r.Method {
+				case http.MethodGet:
+					writeJSON(w, srvCfgAPI.GetServerConfig())
+				case http.MethodPost:
+					var req ServerConfigInfo
+					if err := json.NewDecoder(r.Body).Decode(&req); err != nil {
+						http.Error(w, "invalid JSON: "+err.Error(), http.StatusBadRequest)
+						return
+					}
+					if err := srvCfgAPI.UpdateServerConfig(req.TeamKey, req.ListenAddr); err != nil {
+						http.Error(w, err.Error(), http.StatusInternalServerError)
+						return
+					}
+					writeJSON(w, map[string]string{"status": "saved"})
+				default:
+					http.Error(w, "method not allowed", http.StatusMethodNotAllowed)
+				}
+			})
+		}
 
 	} else {
 		capi := api.(ClientAPI)

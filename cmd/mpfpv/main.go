@@ -46,9 +46,10 @@ func main() {
 		if err != nil {
 			log.Fatalf("failed to create server: %v", err)
 		}
+		s.SetConfigPath(*configPath)
 		// Start Web UI if configured.
 		if cfg.Server.WebUI != "" {
-			handler := web.NewHandler("server", s)
+			handler := web.NewHandler("server", s, s)
 			go func() {
 				if err := web.StartWebUI(cfg.Server.WebUI, handler); err != nil {
 					log.Fatalf("web UI error: %v", err)

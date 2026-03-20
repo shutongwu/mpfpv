@@ -54,6 +54,9 @@ type Server struct {
 	// serverVirtualIP is the server's own virtual IP (for detecting traffic to self).
 	serverVirtualIP [4]byte
 
+	// cfgPath is the path to the configuration file (for saving changes via Web UI).
+	cfgPath string
+
 	// TUN device (optional, nil when TUN is not available).
 	tunDev    tunnel.Device
 	serverIP  net.IP   // server's own virtual IP as net.IP

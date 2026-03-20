@@ -5,9 +5,45 @@ import (
 	"net"
 	"time"
 
+	"github.com/cloud/mpfpv/internal/config"
 	"github.com/cloud/mpfpv/internal/protocol"
 	"github.com/cloud/mpfpv/internal/web"
 )
+
+// SetConfigPath sets the path to the configuration file, enabling
+// the server to save configuration changes made via the Web UI.
+func (s *Server) SetConfigPath(path string) {
+	s.cfgPath = path
+}
+
+// GetServerConfig returns the current server configuration for the Web UI.
+func (s *Server) GetServerConfig() web.ServerConfigInfo {
+	return web.ServerConfigInfo{
+		TeamKey:    s.cfg.TeamKey,
+		ListenAddr: s.cfg.Server.ListenAddr,
+	}
+}
+
+// UpdateServerConfig updates the server's teamKey and/or listenAddr.
+// teamKey changes take effect immediately; listenAddr changes require a restart.
+func (s *Server) UpdateServerConfig(teamKey, listenAddr string) error {
+	// Update teamKey — takes effect immediately.
+	if teamKey != "" && teamKey != s.cfg.TeamKey {
+		s.cfg.TeamKey = teamKey
+		s.teamKeyHash = protocol.ComputeTeamKeyHash(teamKey)
+	}
+
+	// Update listenAddr — saved but requires restart to take effect.
+	if listenAddr != "" {
+		s.cfg.Server.ListenAddr = listenAddr
+	}
+
+	// Save to config file if path is known.
+	if s.cfgPath != "" {
+		return config.SaveConfig(s.cfgPath, s.cfg)
+	}
+	return nil
+}
 
 // sendModeString converts a uint8 send mode to a human-readable string.
 func sendModeString(mode uint8) string {
