@@ -219,6 +219,14 @@ func (w *InterfaceWatcher) scanInterfaces() map[string]*InterfaceInfo {
 			if ip4[0] == 169 && ip4[1] == 254 {
 				continue
 			}
+			// Skip CGNAT/Tailscale (100.64.0.0/10).
+			if ip4[0] == 100 && ip4[1] >= 64 && ip4[1] <= 127 {
+				continue
+			}
+			// Skip our own virtual IP range (10.99.x.x).
+			if ip4[0] == 10 && ip4[1] == 99 {
+				continue
+			}
 			ipv4s = append(ipv4s, ip4)
 		}
 
