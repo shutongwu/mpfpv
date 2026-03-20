@@ -138,17 +138,22 @@ func (w *InterfaceWatcher) detectChanges() {
 // virtual/tunnel device patterns that should never be used as send paths.
 func isVirtualInterface(name string) bool {
 	prefixes := []string{
-		"mpfpv",  // our own TUN device — MUST exclude to prevent packet loops
-		"tun",    // generic TUN devices
-		"tap",    // TAP devices
-		"veth",   // virtual ethernet pairs (Docker, LXC, netns)
-		"br-",    // Docker bridge networks
-		"vmbr",   // Proxmox VE bridges
-		"virbr",  // libvirt bridges
-		"cni",    // Kubernetes CNI
-		"flannel", // Kubernetes flannel
-		"calico", // Kubernetes calico
-		"wg",     // WireGuard interfaces
+		"mpfpv",      // our own TUN device — MUST exclude to prevent packet loops
+		"tun",        // generic TUN devices
+		"tap",        // TAP devices
+		"veth",       // virtual ethernet pairs (Docker, LXC, netns)
+		"vEthernet",  // Windows Hyper-V / WSL2 virtual adapters
+		"br-",        // Docker bridge networks
+		"vmbr",       // Proxmox VE bridges
+		"virbr",      // libvirt bridges
+		"cni",        // Kubernetes CNI
+		"flannel",    // Kubernetes flannel
+		"calico",     // Kubernetes calico
+		"wg",         // WireGuard interfaces
+		"tailscale",  // Tailscale interfaces
+		"Loopback",   // Windows Loopback Adapter
+		"isatap",     // Windows ISATAP tunnel
+		"Teredo",     // Windows Teredo tunnel
 	}
 	for _, p := range prefixes {
 		if len(name) >= len(p) && name[:len(p)] == p {
