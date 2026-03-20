@@ -283,7 +283,12 @@ func (c *Client) tunReadLoop(ctx context.Context) {
 			log.WithError(err).Warn("TUN read error")
 			return
 		}
-		if n < 1 {
+		if n < 20 {
+			continue
+		}
+
+		// Only forward IPv4 packets (version nibble == 4).
+		if buf[protocol.HeaderSize]>>4 != 4 {
 			continue
 		}
 

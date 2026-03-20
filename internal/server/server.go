@@ -227,6 +227,11 @@ func (s *Server) tunReadLoop(ctx context.Context) {
 			continue // too short for an IPv4 header
 		}
 
+		// Only forward IPv4 packets (version nibble == 4).
+		if buf[protocol.HeaderSize]>>4 != 4 {
+			continue
+		}
+
 		payload := buf[protocol.HeaderSize : protocol.HeaderSize+n]
 
 		// Read destination IP from the IPv4 header (bytes 16-19).
@@ -408,10 +413,9 @@ func (s *Server) handleData(hdr protocol.Header, payload []byte, from *net.UDPAd
 		return
 	}
 
-	// Validate inner IP source address matches registered virtualIP.
-	if len(payload) < 20 {
+	// Validate inner IP: must be IPv4, at least 20 bytes.
+	if len(payload) < 20 || payload[0]>>4 != 4 {
 		s.sessionsLock.RUnlock()
-		log.Debugf("server: data payload too short (%d bytes) from clientID=%d", len(payload), clientID)
 		return
 	}
 
