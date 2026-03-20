@@ -539,9 +539,12 @@ func (c *Client) handleData(hdr protocol.Header, payload []byte) {
 		"payloadSize": len(payload),
 	}).Debug("received data packet")
 
-	// Phase 2: write to TUN if available.
+	// Write to TUN if available. Copy payload first because the caller's
+	// buffer may be reused immediately after we return.
 	if c.tunDev != nil {
-		if _, err := c.tunDev.Write(payload); err != nil {
+		pkt := make([]byte, len(payload))
+		copy(pkt, payload)
+		if _, err := c.tunDev.Write(pkt); err != nil {
 			log.WithError(err).Warn("failed to write to TUN")
 		}
 	}
