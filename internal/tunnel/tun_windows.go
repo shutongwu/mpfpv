@@ -3,13 +3,37 @@
 package tunnel
 
 import (
+	_ "embed"
 	"fmt"
 	"net"
+	"os"
 	"os/exec"
+	"path/filepath"
 
 	log "github.com/sirupsen/logrus"
 	wgtun "golang.zx2c4.com/wireguard/tun"
 )
+
+//go:embed wintun.dll
+var wintunDLL []byte
+
+// ensureWintunDLL extracts the embedded wintun.dll next to the running
+// executable so that the wireguard/tun library can load it.
+func ensureWintunDLL() error {
+	exePath, err := os.Executable()
+	if err != nil {
+		return fmt.Errorf("resolve executable path: %w", err)
+	}
+	dllPath := filepath.Join(filepath.Dir(exePath), "wintun.dll")
+
+	// If it already exists and is the right size, skip extraction.
+	if info, err := os.Stat(dllPath); err == nil && info.Size() == int64(len(wintunDLL)) {
+		return nil
+	}
+
+	log.Infof("Extracting embedded wintun.dll to %s", dllPath)
+	return os.WriteFile(dllPath, wintunDLL, 0644)
+}
 
 // windowsTUN wraps a wireguard/tun Device for Windows (backed by wintun driver).
 type windowsTUN struct {
@@ -22,6 +46,11 @@ type windowsTUN struct {
 }
 
 func createPlatformTUN(cfg Config) (Device, error) {
+	// 0. Extract embedded wintun.dll before creating the TUN device.
+	if err := ensureWintunDLL(); err != nil {
+		return nil, fmt.Errorf("extract wintun.dll: %w", err)
+	}
+
 	// 1. Create the TUN device via wintun driver.
 	dev, err := wgtun.CreateTUN(cfg.Name, cfg.MTU)
 	if err != nil {
