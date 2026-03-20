@@ -134,8 +134,33 @@ func (w *InterfaceWatcher) detectChanges() {
 	}
 }
 
+// isVirtualInterface returns true if the interface name matches common
+// virtual/tunnel device patterns that should never be used as send paths.
+func isVirtualInterface(name string) bool {
+	prefixes := []string{
+		"mpfpv",  // our own TUN device — MUST exclude to prevent packet loops
+		"tun",    // generic TUN devices
+		"tap",    // TAP devices
+		"veth",   // virtual ethernet pairs (Docker, LXC, netns)
+		"br-",    // Docker bridge networks
+		"vmbr",   // Proxmox VE bridges
+		"virbr",  // libvirt bridges
+		"cni",    // Kubernetes CNI
+		"flannel", // Kubernetes flannel
+		"calico", // Kubernetes calico
+		"wg",     // WireGuard interfaces
+	}
+	for _, p := range prefixes {
+		if len(name) >= len(p) && name[:len(p)] == p {
+			return true
+		}
+	}
+	return false
+}
+
 // scanInterfaces returns the set of usable network interfaces with IPv4
-// addresses, excluding loopback, down, excluded, and those without IPv4.
+// addresses, excluding loopback, down, excluded, virtual devices, and
+// those without IPv4.
 func (w *InterfaceWatcher) scanInterfaces() map[string]*InterfaceInfo {
 	ifaces, err := net.Interfaces()
 	if err != nil {
@@ -149,6 +174,10 @@ func (w *InterfaceWatcher) scanInterfaces() map[string]*InterfaceInfo {
 
 		// Skip excluded.
 		if w.excluded[name] {
+			continue
+		}
+		// Skip known virtual/tunnel interfaces to prevent packet loops.
+		if isVirtualInterface(name) {
 			continue
 		}
 		// Skip loopback.
