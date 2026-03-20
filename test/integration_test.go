@@ -656,3 +656,297 @@ func TestDataToServerVirtualIP(t *testing.T) {
 		}
 	}
 }
+
+// ---- Phase 3 tests: Multi-NIC redundancy ---------------------------------
+
+// TestMultiAddrRegistration verifies that one clientID sending heartbeats
+// from two different UDP sockets (simulating two NICs) results in two
+// source addresses being registered in the server session.
+func TestMultiAddrRegistration(t *testing.T) {
+	srvAddr, cancel := startServer(t, teamKey, 15, 5)
+	defer cancel()
+
+	udpSrvAddr := srvAddr.(*net.UDPAddr)
+
+	// Two sockets simulating two NICs for the same clientID=1.
+	conn1, err := net.ListenUDP("udp4", nil)
+	if err != nil {
+		t.Fatalf("listen conn1: %v", err)
+	}
+	defer conn1.Close()
+
+	conn2, err := net.ListenUDP("udp4", nil)
+	if err != nil {
+		t.Fatalf("listen conn2: %v", err)
+	}
+	defer conn2.Close()
+
+	ipA := net.ParseIP("10.99.0.1").To4()
+
+	// Send heartbeat from socket 1.
+	hb1 := buildHeartbeat(1, 0, ipA, 24, protocol.SendModeRedundant, teamKey)
+	_, err = conn1.WriteToUDP(hb1, udpSrvAddr)
+	if err != nil {
+		t.Fatalf("send hb from conn1: %v", err)
+	}
+	_, _, err = readPacket(conn1, 2*time.Second)
+	if err != nil {
+		t.Fatalf("ack from conn1: %v", err)
+	}
+
+	// Send heartbeat from socket 2 (same clientID, different source port).
+	hb2 := buildHeartbeat(1, 1, ipA, 24, protocol.SendModeRedundant, teamKey)
+	_, err = conn2.WriteToUDP(hb2, udpSrvAddr)
+	if err != nil {
+		t.Fatalf("send hb from conn2: %v", err)
+	}
+	_, _, err = readPacket(conn2, 2*time.Second)
+	if err != nil {
+		t.Fatalf("ack from conn2: %v", err)
+	}
+
+	// Now verify that a data packet sent to clientID=1 arrives on BOTH sockets.
+	// Register a sender (clientID=2) and send data to clientID=1's virtualIP.
+	connSender, err := net.ListenUDP("udp4", nil)
+	if err != nil {
+		t.Fatalf("listen sender: %v", err)
+	}
+	defer connSender.Close()
+
+	ipSender := net.ParseIP("10.99.0.2").To4()
+	_, _ = connSender.WriteToUDP(buildHeartbeat(2, 0, ipSender, 24, protocol.SendModeRedundant, teamKey), udpSrvAddr)
+	_, _, _ = readPacket(connSender, 2*time.Second)
+
+	dataPkt := buildDataPacket(2, 1, ipSender, ipA)
+	_, err = connSender.WriteToUDP(dataPkt, udpSrvAddr)
+	if err != nil {
+		t.Fatalf("send data: %v", err)
+	}
+
+	// Both conn1 and conn2 should receive the forwarded data (redundant mode).
+	// This implicitly verifies that 2 addresses are registered.
+	_, _, err1 := readPacket(conn1, 2*time.Second)
+	_, _, err2 := readPacket(conn2, 2*time.Second)
+
+	if err1 != nil {
+		t.Fatalf("conn1 did not receive data — addr not registered: %v", err1)
+	}
+	if err2 != nil {
+		t.Fatalf("conn2 did not receive data — second addr not registered: %v", err2)
+	}
+}
+
+// TestRedundantSendMode verifies that in redundant mode, data sent to a
+// clientID with two registered addresses is delivered to BOTH addresses.
+func TestRedundantSendMode(t *testing.T) {
+	srvAddr, cancel := startServer(t, teamKey, 15, 5)
+	defer cancel()
+
+	udpSrvAddr := srvAddr.(*net.UDPAddr)
+
+	// ClientID=1 registers from two sockets with sendMode=redundant.
+	conn1, err := net.ListenUDP("udp4", nil)
+	if err != nil {
+		t.Fatalf("listen conn1: %v", err)
+	}
+	defer conn1.Close()
+
+	conn2, err := net.ListenUDP("udp4", nil)
+	if err != nil {
+		t.Fatalf("listen conn2: %v", err)
+	}
+	defer conn2.Close()
+
+	ipA := net.ParseIP("10.99.0.1").To4()
+
+	_, _ = conn1.WriteToUDP(buildHeartbeat(1, 0, ipA, 24, protocol.SendModeRedundant, teamKey), udpSrvAddr)
+	_, _, _ = readPacket(conn1, 2*time.Second)
+	_, _ = conn2.WriteToUDP(buildHeartbeat(1, 1, ipA, 24, protocol.SendModeRedundant, teamKey), udpSrvAddr)
+	_, _, _ = readPacket(conn2, 2*time.Second)
+
+	// ClientID=2 sends data to clientID=1.
+	connB, err := net.ListenUDP("udp4", nil)
+	if err != nil {
+		t.Fatalf("listen B: %v", err)
+	}
+	defer connB.Close()
+
+	ipB := net.ParseIP("10.99.0.2").To4()
+	_, _ = connB.WriteToUDP(buildHeartbeat(2, 0, ipB, 24, protocol.SendModeRedundant, teamKey), udpSrvAddr)
+	_, _, _ = readPacket(connB, 2*time.Second)
+
+	// Send 3 data packets.
+	for seq := uint32(1); seq <= 3; seq++ {
+		dataPkt := buildDataPacket(2, seq, ipB, ipA)
+		_, err = connB.WriteToUDP(dataPkt, udpSrvAddr)
+		if err != nil {
+			t.Fatalf("send data seq=%d: %v", seq, err)
+		}
+		// Small delay to ensure ordering.
+		time.Sleep(20 * time.Millisecond)
+	}
+
+	// Both sockets should receive all 3 packets.
+	for seq := uint32(1); seq <= 3; seq++ {
+		_, _, err1 := readPacket(conn1, 2*time.Second)
+		if err1 != nil {
+			t.Fatalf("conn1 did not receive packet seq=%d: %v", seq, err1)
+		}
+		_, _, err2 := readPacket(conn2, 2*time.Second)
+		if err2 != nil {
+			t.Fatalf("conn2 did not receive packet seq=%d: %v", seq, err2)
+		}
+	}
+}
+
+// TestFailoverSendMode verifies that in failover mode, data sent to a
+// clientID with two registered addresses is delivered to only ONE address
+// (the most recently active one).
+func TestFailoverSendMode(t *testing.T) {
+	srvAddr, cancel := startServer(t, teamKey, 15, 5)
+	defer cancel()
+
+	udpSrvAddr := srvAddr.(*net.UDPAddr)
+
+	// ClientID=1 registers from two sockets with sendMode=failover.
+	conn1, err := net.ListenUDP("udp4", nil)
+	if err != nil {
+		t.Fatalf("listen conn1: %v", err)
+	}
+	defer conn1.Close()
+
+	conn2, err := net.ListenUDP("udp4", nil)
+	if err != nil {
+		t.Fatalf("listen conn2: %v", err)
+	}
+	defer conn2.Close()
+
+	ipA := net.ParseIP("10.99.0.1").To4()
+
+	// Register addr1 first.
+	_, _ = conn1.WriteToUDP(buildHeartbeat(1, 0, ipA, 24, protocol.SendModeFailover, teamKey), udpSrvAddr)
+	_, _, _ = readPacket(conn1, 2*time.Second)
+
+	// Then register addr2 (this will be the most recently seen).
+	time.Sleep(50 * time.Millisecond)
+	_, _ = conn2.WriteToUDP(buildHeartbeat(1, 1, ipA, 24, protocol.SendModeFailover, teamKey), udpSrvAddr)
+	_, _, _ = readPacket(conn2, 2*time.Second)
+
+	// ClientID=2 sends data to clientID=1.
+	connB, err := net.ListenUDP("udp4", nil)
+	if err != nil {
+		t.Fatalf("listen B: %v", err)
+	}
+	defer connB.Close()
+
+	ipB := net.ParseIP("10.99.0.2").To4()
+	_, _ = connB.WriteToUDP(buildHeartbeat(2, 0, ipB, 24, protocol.SendModeFailover, teamKey), udpSrvAddr)
+	_, _, _ = readPacket(connB, 2*time.Second)
+
+	dataPkt := buildDataPacket(2, 1, ipB, ipA)
+	_, err = connB.WriteToUDP(dataPkt, udpSrvAddr)
+	if err != nil {
+		t.Fatalf("send data: %v", err)
+	}
+
+	// Only conn2 (most recently active) should receive data.
+	// We read from both with a short timeout to check.
+	received1 := 0
+	received2 := 0
+
+	_ = conn1.SetReadDeadline(time.Now().Add(1 * time.Second))
+	buf1 := make([]byte, 65535)
+	n1, _, err1 := conn1.ReadFromUDP(buf1)
+	if err1 == nil && n1 > 0 {
+		received1++
+	}
+
+	_ = conn2.SetReadDeadline(time.Now().Add(1 * time.Second))
+	buf2 := make([]byte, 65535)
+	n2, _, err2 := conn2.ReadFromUDP(buf2)
+	if err2 == nil && n2 > 0 {
+		received2++
+	}
+
+	total := received1 + received2
+	if total != 1 {
+		t.Fatalf("failover: expected exactly 1 socket to receive data, got %d (conn1=%d, conn2=%d)",
+			total, received1, received2)
+	}
+	if received2 != 1 {
+		t.Fatalf("failover: expected conn2 (most recent) to receive data, but conn1 received it instead")
+	}
+}
+
+// TestAddrTimeoutPartial verifies that when clientID=1 has two addresses and
+// only one keeps heartbeating, the stale address is removed but the session
+// survives (because one address is still active).
+func TestAddrTimeoutPartial(t *testing.T) {
+	// addrTimeout=2s, clientTimeout=10s.
+	srvAddr, cancel := startServer(t, teamKey, 10, 2)
+	defer cancel()
+
+	udpSrvAddr := srvAddr.(*net.UDPAddr)
+
+	// ClientID=1 registers from two sockets.
+	conn1, err := net.ListenUDP("udp4", nil)
+	if err != nil {
+		t.Fatalf("listen conn1: %v", err)
+	}
+	defer conn1.Close()
+
+	conn2, err := net.ListenUDP("udp4", nil)
+	if err != nil {
+		t.Fatalf("listen conn2: %v", err)
+	}
+	defer conn2.Close()
+
+	ipA := net.ParseIP("10.99.0.1").To4()
+
+	// Register both addresses.
+	_, _ = conn1.WriteToUDP(buildHeartbeat(1, 0, ipA, 24, protocol.SendModeRedundant, teamKey), udpSrvAddr)
+	_, _, _ = readPacket(conn1, 2*time.Second)
+	_, _ = conn2.WriteToUDP(buildHeartbeat(1, 1, ipA, 24, protocol.SendModeRedundant, teamKey), udpSrvAddr)
+	_, _, _ = readPacket(conn2, 2*time.Second)
+
+	// Keep only conn1 alive; let conn2's address expire.
+	// Send heartbeats from conn1 every second for 4 seconds (> addrTimeout=2s).
+	for i := 0; i < 4; i++ {
+		time.Sleep(1 * time.Second)
+		_, _ = conn1.WriteToUDP(buildHeartbeat(1, uint32(10+i), ipA, 24, protocol.SendModeRedundant, teamKey), udpSrvAddr)
+		_, _, _ = readPacket(conn1, 2*time.Second)
+	}
+
+	// Now conn2's address should have been cleaned up, but the session remains.
+	// Register clientID=2 as a sender.
+	connSender, err := net.ListenUDP("udp4", nil)
+	if err != nil {
+		t.Fatalf("listen sender: %v", err)
+	}
+	defer connSender.Close()
+
+	ipSender := net.ParseIP("10.99.0.2").To4()
+	_, _ = connSender.WriteToUDP(buildHeartbeat(2, 0, ipSender, 24, protocol.SendModeRedundant, teamKey), udpSrvAddr)
+	_, _, _ = readPacket(connSender, 2*time.Second)
+
+	// Send data to clientID=1.
+	dataPkt := buildDataPacket(2, 1, ipSender, ipA)
+	_, err = connSender.WriteToUDP(dataPkt, udpSrvAddr)
+	if err != nil {
+		t.Fatalf("send data: %v", err)
+	}
+
+	// conn1 (still alive) should receive the data.
+	_, _, err = readPacket(conn1, 2*time.Second)
+	if err != nil {
+		t.Fatalf("conn1 should still receive data (session alive): %v", err)
+	}
+
+	// conn2 (expired) should NOT receive data.
+	_ = conn2.SetReadDeadline(time.Now().Add(500 * time.Millisecond))
+	tmp := make([]byte, 1024)
+	n, _, readErr := conn2.ReadFromUDP(tmp)
+	if readErr == nil && n > 0 {
+		t.Fatalf("conn2 received data despite its address being expired (%d bytes)", n)
+	}
+}
