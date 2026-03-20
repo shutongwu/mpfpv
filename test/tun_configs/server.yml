@@ -1,0 +1,12 @@
+mode: server
+teamKey: "tun-test-secret"
+
+server:
+  listenAddr: "0.0.0.0:9800"
+  virtualIP: "10.99.0.254/24"
+  subnet: "10.99.0.0/24"
+  clientTimeout: 30
+  addrTimeout: 10
+  dedupWindow: 4096
+  mtu: 1300
+  ipPoolFile: "/tmp/mpfpv_tun_test_pool.json"

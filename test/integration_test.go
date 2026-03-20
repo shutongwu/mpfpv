@@ -5,7 +5,10 @@ package integration_test
 import (
 	"context"
 	"encoding/binary"
+	"fmt"
 	"net"
+	"os"
+	"path/filepath"
 	"testing"
 	"time"
 
@@ -41,7 +44,7 @@ func startServer(t *testing.T, teamKey string, clientTimeout, addrTimeout int) (
 			AddrTimeout:   addrTimeout,
 			DedupWindow:   4096,
 			MTU:           1300,
-			IPPoolFile:    "ip_pool.json",
+			IPPoolFile:    filepath.Join(os.TempDir(), fmt.Sprintf("mpfpv_test_pool_%d.json", time.Now().UnixNano())),
 		},
 	}
 
@@ -414,5 +417,242 @@ func TestSessionTimeoutCleanup(t *testing.T) {
 	ack, _ := protocol.DecodeHeartbeatAck(payload)
 	if ack.Status != protocol.AckStatusOK {
 		t.Fatalf("expected OK on re-register, got 0x%02x", ack.Status)
+	}
+}
+
+// ---- Phase 2 tests ---------------------------------------------------------
+
+// TestAutoIPAllocation verifies that a client sending virtualIP=0.0.0.0
+// receives a non-zero assigned IP from the server's subnet pool.
+func TestAutoIPAllocation(t *testing.T) {
+	srvAddr, cancel := startServer(t, teamKey, 15, 5)
+	defer cancel()
+
+	conn, err := net.ListenUDP("udp4", nil)
+	if err != nil {
+		t.Fatalf("listen: %v", err)
+	}
+	defer conn.Close()
+
+	// Send heartbeat with virtualIP = 0.0.0.0 (request auto-assignment).
+	hb := buildHeartbeat(10, 0, net.IPv4zero.To4(), 0, protocol.SendModeRedundant, teamKey)
+	_, err = conn.WriteToUDP(hb, srvAddr.(*net.UDPAddr))
+	if err != nil {
+		t.Fatalf("send heartbeat: %v", err)
+	}
+
+	hdr, payload, err := readPacket(conn, 2*time.Second)
+	if err != nil {
+		t.Fatalf("read ack: %v", err)
+	}
+	if hdr.Type != protocol.TypeHeartbeatAck {
+		t.Fatalf("expected HeartbeatAck, got type 0x%02x", hdr.Type)
+	}
+
+	ack, err := protocol.DecodeHeartbeatAck(payload)
+	if err != nil {
+		t.Fatalf("decode ack: %v", err)
+	}
+	if ack.Status != protocol.AckStatusOK {
+		t.Fatalf("expected AckStatusOK, got 0x%02x", ack.Status)
+	}
+
+	// Assigned IP must not be 0.0.0.0.
+	if ack.AssignedIP.Equal(net.IPv4zero) {
+		t.Fatal("server returned 0.0.0.0 — auto-allocation failed")
+	}
+
+	// Must be within the 10.99.0.0/24 subnet.
+	_, subnet, _ := net.ParseCIDR("10.99.0.0/24")
+	if !subnet.Contains(ack.AssignedIP) {
+		t.Fatalf("assigned IP %s is not in subnet %s", ack.AssignedIP, subnet)
+	}
+
+	// Prefix length must match the server's configured /24.
+	if ack.PrefixLen != 24 {
+		t.Fatalf("expected prefix 24, got %d", ack.PrefixLen)
+	}
+}
+
+// TestAutoIPReconnectSameIP verifies that the same clientID gets back the
+// same auto-assigned IP after its session expires and it re-registers.
+func TestAutoIPReconnectSameIP(t *testing.T) {
+	// Short timeouts so the session expires quickly.
+	srvAddr, cancel := startServer(t, teamKey, 2, 1)
+	defer cancel()
+
+	conn, err := net.ListenUDP("udp4", nil)
+	if err != nil {
+		t.Fatalf("listen: %v", err)
+	}
+	defer conn.Close()
+
+	udpAddr := srvAddr.(*net.UDPAddr)
+
+	// First registration: auto-assign.
+	hb := buildHeartbeat(20, 0, net.IPv4zero.To4(), 0, protocol.SendModeRedundant, teamKey)
+	_, err = conn.WriteToUDP(hb, udpAddr)
+	if err != nil {
+		t.Fatalf("send hb1: %v", err)
+	}
+
+	_, payload1, err := readPacket(conn, 2*time.Second)
+	if err != nil {
+		t.Fatalf("read ack1: %v", err)
+	}
+	ack1, _ := protocol.DecodeHeartbeatAck(payload1)
+	if ack1.Status != protocol.AckStatusOK {
+		t.Fatalf("ack1 status: 0x%02x", ack1.Status)
+	}
+	firstIP := ack1.AssignedIP
+
+	// Wait for the session to fully expire.
+	time.Sleep(4 * time.Second)
+
+	// Re-register with the same clientID and virtualIP=0.0.0.0.
+	hb2 := buildHeartbeat(20, 100, net.IPv4zero.To4(), 0, protocol.SendModeRedundant, teamKey)
+	_, err = conn.WriteToUDP(hb2, udpAddr)
+	if err != nil {
+		t.Fatalf("send hb2: %v", err)
+	}
+
+	_, payload2, err := readPacket(conn, 2*time.Second)
+	if err != nil {
+		t.Fatalf("read ack2: %v", err)
+	}
+	ack2, _ := protocol.DecodeHeartbeatAck(payload2)
+	if ack2.Status != protocol.AckStatusOK {
+		t.Fatalf("ack2 status: 0x%02x", ack2.Status)
+	}
+
+	if !ack2.AssignedIP.Equal(firstIP) {
+		t.Fatalf("reconnect got different IP: first=%s, second=%s", firstIP, ack2.AssignedIP)
+	}
+}
+
+// TestAutoIPMultiClientNoConflict verifies that 3 clients auto-assigned IPs
+// all receive distinct addresses.
+func TestAutoIPMultiClientNoConflict(t *testing.T) {
+	srvAddr, cancel := startServer(t, teamKey, 15, 5)
+	defer cancel()
+
+	udpAddr := srvAddr.(*net.UDPAddr)
+
+	type result struct {
+		clientID uint16
+		ip       net.IP
+	}
+
+	results := make([]result, 3)
+	for i := 0; i < 3; i++ {
+		conn, err := net.ListenUDP("udp4", nil)
+		if err != nil {
+			t.Fatalf("listen client %d: %v", i, err)
+		}
+		defer conn.Close()
+
+		cid := uint16(30 + i)
+		hb := buildHeartbeat(cid, 0, net.IPv4zero.To4(), 0, protocol.SendModeRedundant, teamKey)
+		_, err = conn.WriteToUDP(hb, udpAddr)
+		if err != nil {
+			t.Fatalf("send hb client %d: %v", i, err)
+		}
+
+		_, payload, err := readPacket(conn, 2*time.Second)
+		if err != nil {
+			t.Fatalf("read ack client %d: %v", i, err)
+		}
+		ack, _ := protocol.DecodeHeartbeatAck(payload)
+		if ack.Status != protocol.AckStatusOK {
+			t.Fatalf("client %d ack status: 0x%02x", i, ack.Status)
+		}
+		if ack.AssignedIP.Equal(net.IPv4zero) {
+			t.Fatalf("client %d got 0.0.0.0", i)
+		}
+		results[i] = result{clientID: cid, ip: ack.AssignedIP}
+	}
+
+	// Verify all IPs are distinct.
+	seen := make(map[string]uint16)
+	for _, r := range results {
+		key := r.ip.String()
+		if prev, ok := seen[key]; ok {
+			t.Fatalf("IP conflict: clientID=%d and clientID=%d both got %s", prev, r.clientID, key)
+		}
+		seen[key] = r.clientID
+	}
+
+	// Also verify none of the IPs is the server's own virtual IP (10.99.0.254).
+	serverIP := net.ParseIP("10.99.0.254").To4()
+	for _, r := range results {
+		if r.ip.Equal(serverIP) {
+			t.Fatalf("clientID=%d was assigned the server's own IP %s", r.clientID, serverIP)
+		}
+	}
+}
+
+// TestDataToServerVirtualIP verifies that a data packet whose inner
+// destination is the server's own virtual IP is NOT forwarded to any client.
+// The server should either write it to TUN (if available) or silently drop it.
+func TestDataToServerVirtualIP(t *testing.T) {
+	srvAddr, cancel := startServer(t, teamKey, 15, 5)
+	defer cancel()
+
+	udpAddr := srvAddr.(*net.UDPAddr)
+
+	// Register client A (clientID=1) and client B (clientID=2).
+	connA, err := net.ListenUDP("udp4", nil)
+	if err != nil {
+		t.Fatalf("listen A: %v", err)
+	}
+	defer connA.Close()
+
+	connB, err := net.ListenUDP("udp4", nil)
+	if err != nil {
+		t.Fatalf("listen B: %v", err)
+	}
+	defer connB.Close()
+
+	ipA := net.ParseIP("10.99.0.1").To4()
+	ipB := net.ParseIP("10.99.0.2").To4()
+	serverIP := net.ParseIP("10.99.0.254").To4()
+
+	// Register both clients with static IPs.
+	_, _ = connA.WriteToUDP(buildHeartbeat(1, 0, ipA, 24, protocol.SendModeRedundant, teamKey), udpAddr)
+	_, _ = connB.WriteToUDP(buildHeartbeat(2, 0, ipB, 24, protocol.SendModeRedundant, teamKey), udpAddr)
+	_, _, _ = readPacket(connA, 2*time.Second)
+	_, _, _ = readPacket(connB, 2*time.Second)
+
+	// Client A sends data to the SERVER's virtual IP (10.99.0.254).
+	dataPkt := buildDataPacket(1, 1, ipA, serverIP)
+	_, err = connA.WriteToUDP(dataPkt, udpAddr)
+	if err != nil {
+		t.Fatalf("send data to server VIP: %v", err)
+	}
+
+	// Neither client A nor client B should receive the packet.
+	// The server should handle it locally (TUN write or silent drop).
+	_ = connA.SetReadDeadline(time.Now().Add(500 * time.Millisecond))
+	tmp := make([]byte, 1024)
+	n, _, readErr := connA.ReadFromUDP(tmp)
+	if readErr == nil && n > 0 {
+		// Could be a late heartbeat ack; check if it's a Data packet.
+		if n >= protocol.HeaderSize {
+			hdr, _ := protocol.DecodeHeader(tmp[:n])
+			if hdr.Type == protocol.TypeData {
+				t.Fatalf("client A received data packet that was destined to server VIP")
+			}
+		}
+	}
+
+	_ = connB.SetReadDeadline(time.Now().Add(500 * time.Millisecond))
+	n, _, readErr = connB.ReadFromUDP(tmp)
+	if readErr == nil && n > 0 {
+		if n >= protocol.HeaderSize {
+			hdr, _ := protocol.DecodeHeader(tmp[:n])
+			if hdr.Type == protocol.TypeData {
+				t.Fatalf("client B received data packet that was destined to server VIP")
+			}
+		}
 	}
 }

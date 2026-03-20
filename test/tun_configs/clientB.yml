@@ -1,0 +1,10 @@
+mode: client
+teamKey: "tun-test-secret"
+
+client:
+  clientID: 2
+  # virtualIP left empty for auto-assignment from server.
+  serverAddr: "192.168.101.1:9800"
+  sendMode: "redundant"
+  mtu: 1300
+  dedupWindow: 4096
