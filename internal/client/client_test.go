@@ -11,6 +11,7 @@ import (
 
 	"github.com/cloud/mpfpv/internal/config"
 	"github.com/cloud/mpfpv/internal/protocol"
+	"github.com/cloud/mpfpv/internal/transport"
 )
 
 // helper to build a minimal config for testing.
@@ -819,5 +820,408 @@ func TestNewCreatesChannels(t *testing.T) {
 	}
 	if c.tunReady == nil {
 		t.Error("tunReady channel should not be nil")
+	}
+}
+
+// ---------------------------------------------------------------------------
+// Phase 3 multipath tests
+// ---------------------------------------------------------------------------
+
+// TestNewClientDefaultsNoMultipath verifies that a freshly created Client
+// has multipath disabled by default (it's only enabled in Run).
+func TestNewClientDefaultsNoMultipath(t *testing.T) {
+	cfg := testConfig("127.0.0.1:9800")
+	c, err := New(cfg)
+	if err != nil {
+		t.Fatalf("New() error: %v", err)
+	}
+	if c.useMultipath {
+		t.Error("useMultipath should be false before Run()")
+	}
+	if c.multipath != nil {
+		t.Error("multipath should be nil before Run()")
+	}
+}
+
+// TestMultipathAccessor verifies the Multipath() accessor.
+func TestMultipathAccessor(t *testing.T) {
+	cfg := testConfig("127.0.0.1:9800")
+	c, err := New(cfg)
+	if err != nil {
+		t.Fatalf("New() error: %v", err)
+	}
+	if c.Multipath() != nil {
+		t.Error("Multipath() should be nil before Run()")
+	}
+}
+
+// TestRunFallbackForLoopback verifies that Run() correctly falls back to
+// single socket mode when the server address is loopback (multipath skipped
+// because SO_BINDTODEVICE cannot reach 127.0.0.0/8).
+func TestRunFallbackForLoopback(t *testing.T) {
+	// Start a dummy server on loopback.
+	serverConn, err := net.ListenUDP("udp", &net.UDPAddr{IP: net.IPv4(127, 0, 0, 1), Port: 0})
+	if err != nil {
+		t.Fatalf("listen error: %v", err)
+	}
+	defer serverConn.Close()
+
+	cfg := testConfig(serverConn.LocalAddr().String())
+	c, err := New(cfg)
+	if err != nil {
+		t.Fatalf("New() error: %v", err)
+	}
+
+	ctx, cancel := context.WithCancel(context.Background())
+
+	errCh := make(chan error, 1)
+	go func() {
+		errCh <- c.Run(ctx)
+	}()
+
+	// Wait to receive a heartbeat via single socket.
+	buf := make([]byte, 1500)
+	serverConn.SetReadDeadline(time.Now().Add(3 * time.Second))
+	n, _, err := serverConn.ReadFromUDP(buf)
+	if err != nil {
+		t.Fatalf("expected to receive heartbeat, got error: %v", err)
+	}
+
+	hdr, err := protocol.DecodeHeader(buf[:n])
+	if err != nil {
+		t.Fatalf("DecodeHeader error: %v", err)
+	}
+	if hdr.Type != protocol.TypeHeartbeat {
+		t.Errorf("expected heartbeat, got type %d", hdr.Type)
+	}
+
+	// For loopback, multipath should be skipped.
+	if c.useMultipath {
+		t.Error("expected useMultipath=false for loopback server")
+	}
+
+	cancel()
+	select {
+	case err := <-errCh:
+		if err != nil {
+			t.Errorf("Run() returned error: %v", err)
+		}
+	case <-time.After(3 * time.Second):
+		t.Fatal("Run() did not exit within timeout")
+	}
+}
+
+// TestSendMultipathMode verifies that Send() works in multipath mode
+// by manually setting up a MultiPathSender with a loopback path.
+func TestSendMultipathMode(t *testing.T) {
+	// Server socket to receive data.
+	serverConn, err := net.ListenUDP("udp", &net.UDPAddr{IP: net.IPv4(127, 0, 0, 1), Port: 0})
+	if err != nil {
+		t.Fatalf("listen error: %v", err)
+	}
+	defer serverConn.Close()
+	serverAddr := serverConn.LocalAddr().(*net.UDPAddr)
+
+	cfg := testConfig(serverAddr.String())
+	c, err := New(cfg)
+	if err != nil {
+		t.Fatalf("New() error: %v", err)
+	}
+
+	// Create a MultiPathSender with a manual loopback path.
+	mp, err := transport.NewMultiPathSender(serverAddr, protocol.SendModeRedundant, nil)
+	if err != nil {
+		t.Fatalf("NewMultiPathSender: %v", err)
+	}
+	c.multipath = mp
+	c.useMultipath = true
+
+	// Manually add a loopback path to the sender.
+	loConn, err := net.ListenUDP("udp", &net.UDPAddr{IP: net.IPv4(127, 0, 0, 1), Port: 0})
+	if err != nil {
+		t.Fatalf("listen lo: %v", err)
+	}
+	defer loConn.Close()
+	mp.AddPathForTest("test-lo", net.IPv4(127, 0, 0, 1), loConn)
+
+	// Send a data packet.
+	testPayload := []byte("multipath-data")
+	if err := c.Send(testPayload); err != nil {
+		t.Fatalf("Send() error: %v", err)
+	}
+
+	// Verify server received it.
+	buf := make([]byte, 1500)
+	serverConn.SetReadDeadline(time.Now().Add(2 * time.Second))
+	n, _, err := serverConn.ReadFromUDP(buf)
+	if err != nil {
+		t.Fatalf("read error: %v", err)
+	}
+
+	hdr, err := protocol.DecodeHeader(buf[:n])
+	if err != nil {
+		t.Fatalf("DecodeHeader error: %v", err)
+	}
+	if hdr.Type != protocol.TypeData {
+		t.Errorf("type = %d, want Data", hdr.Type)
+	}
+
+	payload := buf[protocol.HeaderSize:n]
+	if string(payload) != "multipath-data" {
+		t.Errorf("payload = %q, want %q", payload, "multipath-data")
+	}
+}
+
+// TestHeartbeatMultipathSendAll verifies that in multipath mode, sendHeartbeat
+// calls SendAll (sending through all paths).
+func TestHeartbeatMultipathSendAll(t *testing.T) {
+	// Two "server" sockets — we use one actual server address since all paths
+	// send to the same server, but we'll count how many copies arrive.
+	serverConn, err := net.ListenUDP("udp", &net.UDPAddr{IP: net.IPv4(127, 0, 0, 1), Port: 0})
+	if err != nil {
+		t.Fatalf("listen error: %v", err)
+	}
+	defer serverConn.Close()
+	serverAddr := serverConn.LocalAddr().(*net.UDPAddr)
+
+	cfg := testConfig(serverAddr.String())
+	c, err := New(cfg)
+	if err != nil {
+		t.Fatalf("New() error: %v", err)
+	}
+
+	mp, err := transport.NewMultiPathSender(serverAddr, protocol.SendModeRedundant, nil)
+	if err != nil {
+		t.Fatalf("NewMultiPathSender: %v", err)
+	}
+	c.multipath = mp
+	c.useMultipath = true
+
+	// Add two loopback paths.
+	loConn1, _ := net.ListenUDP("udp", &net.UDPAddr{IP: net.IPv4(127, 0, 0, 1), Port: 0})
+	loConn2, _ := net.ListenUDP("udp", &net.UDPAddr{IP: net.IPv4(127, 0, 0, 1), Port: 0})
+	defer loConn1.Close()
+	defer loConn2.Close()
+	mp.AddPathForTest("path1", net.IPv4(127, 0, 0, 1), loConn1)
+	mp.AddPathForTest("path2", net.IPv4(127, 0, 0, 1), loConn2)
+
+	// Send heartbeat.
+	if err := c.sendHeartbeat(); err != nil {
+		t.Fatalf("sendHeartbeat error: %v", err)
+	}
+
+	// Should receive 2 copies (one from each path).
+	serverConn.SetReadDeadline(time.Now().Add(500 * time.Millisecond))
+	buf := make([]byte, 1500)
+	received := 0
+	for i := 0; i < 3; i++ {
+		n, _, err := serverConn.ReadFromUDP(buf)
+		if err != nil {
+			break
+		}
+		hdr, err := protocol.DecodeHeader(buf[:n])
+		if err != nil {
+			continue
+		}
+		if hdr.Type == protocol.TypeHeartbeat {
+			received++
+		}
+	}
+	if received != 2 {
+		t.Errorf("expected 2 heartbeat copies (SendAll), got %d", received)
+	}
+}
+
+// TestRecvLoopMultipath verifies that recvLoopMultipath correctly dispatches
+// HeartbeatAck and Data packets received from the multipath channel.
+func TestRecvLoopMultipath(t *testing.T) {
+	serverAddr, _ := net.ResolveUDPAddr("udp", "127.0.0.1:19800")
+	cfg := testConfig(serverAddr.String())
+	c, err := New(cfg)
+	if err != nil {
+		t.Fatalf("New() error: %v", err)
+	}
+
+	mp, err := transport.NewMultiPathSender(serverAddr, protocol.SendModeRedundant, nil)
+	if err != nil {
+		t.Fatalf("NewMultiPathSender: %v", err)
+	}
+	c.multipath = mp
+	c.useMultipath = true
+
+	// Inject a mock TUN to capture data writes.
+	mock := newMockTUN("test0")
+	c.tunDev = mock
+
+	// Record a heartbeat send time for RTT measurement.
+	c.hbTimeMu.Lock()
+	c.lastHeartbeatSent = time.Now()
+	c.hbTimeMu.Unlock()
+
+	ctx, cancel := context.WithCancel(context.Background())
+	defer cancel()
+
+	go c.recvLoopMultipath(ctx)
+
+	// Simulate receiving a HeartbeatAck via the multipath channel.
+	ackBuf := make([]byte, protocol.HeaderSize+protocol.HeartbeatAckPayloadSize)
+	protocol.EncodeHeader(ackBuf, &protocol.Header{
+		Version:  protocol.Version1,
+		Type:     protocol.TypeHeartbeatAck,
+		ClientID: 0,
+		Seq:      0,
+	})
+	protocol.EncodeHeartbeatAck(ackBuf[protocol.HeaderSize:], &protocol.HeartbeatAckPayload{
+		AssignedIP: net.IPv4(10, 99, 0, 1).To4(),
+		PrefixLen:  24,
+		Status:     protocol.AckStatusOK,
+	})
+
+	// Send the ack packet to the recv channel via the test helper.
+	mp.InjectRecvForTest(transport.RecvPacket{
+		Data:     ackBuf,
+		FromPath: "test-path",
+		Addr:     serverAddr,
+	})
+
+	// Wait for the ack to be processed.
+	time.Sleep(100 * time.Millisecond)
+
+	if !c.IsRegistered() {
+		t.Error("expected registered = true after HeartbeatAck via multipath")
+	}
+
+	// Now simulate receiving a Data packet.
+	fakeIP := []byte{0x45, 0x00, 0x00, 0x14, 0, 0, 0, 0, 64, 17, 0, 0, 10, 99, 0, 2, 10, 99, 0, 1}
+	dataBuf := make([]byte, protocol.HeaderSize+len(fakeIP))
+	protocol.EncodeHeader(dataBuf, &protocol.Header{
+		Version:  protocol.Version1,
+		Type:     protocol.TypeData,
+		ClientID: 2,
+		Seq:      0,
+	})
+	copy(dataBuf[protocol.HeaderSize:], fakeIP)
+
+	mp.InjectRecvForTest(transport.RecvPacket{
+		Data:     dataBuf,
+		FromPath: "test-path",
+		Addr:     serverAddr,
+	})
+
+	// Verify data was written to TUN.
+	select {
+	case written := <-mock.writeCh:
+		if len(written) != len(fakeIP) {
+			t.Fatalf("written len = %d, want %d", len(written), len(fakeIP))
+		}
+	case <-time.After(2 * time.Second):
+		t.Fatal("timeout waiting for TUN write from multipath recv")
+	}
+}
+
+// TestTunReadLoopMultipath verifies that tunReadLoop uses multipath.Send()
+// when multipath mode is active.
+func TestTunReadLoopMultipath(t *testing.T) {
+	// Server socket.
+	serverConn, err := net.ListenUDP("udp", &net.UDPAddr{IP: net.IPv4(127, 0, 0, 1), Port: 0})
+	if err != nil {
+		t.Fatalf("listen error: %v", err)
+	}
+	defer serverConn.Close()
+	serverAddr := serverConn.LocalAddr().(*net.UDPAddr)
+
+	cfg := testConfig(serverAddr.String())
+	c, err := New(cfg)
+	if err != nil {
+		t.Fatalf("New() error: %v", err)
+	}
+
+	// Set up multipath with a loopback path.
+	mp, err := transport.NewMultiPathSender(serverAddr, protocol.SendModeRedundant, nil)
+	if err != nil {
+		t.Fatalf("NewMultiPathSender: %v", err)
+	}
+	c.multipath = mp
+	c.useMultipath = true
+
+	loConn, err := net.ListenUDP("udp", &net.UDPAddr{IP: net.IPv4(127, 0, 0, 1), Port: 0})
+	if err != nil {
+		t.Fatalf("listen lo: %v", err)
+	}
+	defer loConn.Close()
+	mp.AddPathForTest("test-lo", net.IPv4(127, 0, 0, 1), loConn)
+
+	// Inject mock TUN.
+	mock := newMockTUN("test0")
+	c.tunDev = mock
+	close(c.tunReady)
+
+	ctx, cancel := context.WithCancel(context.Background())
+	defer cancel()
+
+	go c.tunReadLoop(ctx)
+
+	// Simulate an IP packet on the TUN.
+	fakeIP := []byte{0x45, 0x00, 0x00, 0x14, 0, 0, 0, 0, 64, 17, 0, 0, 10, 99, 0, 1, 10, 99, 0, 2}
+	mock.readCh <- fakeIP
+
+	// Verify it was sent to the server via multipath.
+	buf := make([]byte, 1500)
+	serverConn.SetReadDeadline(time.Now().Add(2 * time.Second))
+	n, _, err := serverConn.ReadFromUDP(buf)
+	if err != nil {
+		t.Fatalf("read error: %v", err)
+	}
+
+	hdr, err := protocol.DecodeHeader(buf[:n])
+	if err != nil {
+		t.Fatalf("DecodeHeader error: %v", err)
+	}
+	if hdr.Type != protocol.TypeData {
+		t.Errorf("type = %d, want Data", hdr.Type)
+	}
+	if hdr.ClientID != 1 {
+		t.Errorf("clientID = %d, want 1", hdr.ClientID)
+	}
+
+	cancel()
+	mock.Close()
+}
+
+// TestHeartbeatRecordsTimestamp verifies that sendHeartbeat records the
+// lastHeartbeatSent timestamp for RTT calculation.
+func TestHeartbeatRecordsTimestamp(t *testing.T) {
+	serverConn, err := net.ListenUDP("udp", &net.UDPAddr{IP: net.IPv4(127, 0, 0, 1), Port: 0})
+	if err != nil {
+		t.Fatalf("listen error: %v", err)
+	}
+	defer serverConn.Close()
+
+	cfg := testConfig(serverConn.LocalAddr().String())
+	c, err := New(cfg)
+	if err != nil {
+		t.Fatalf("New() error: %v", err)
+	}
+
+	// Use single socket mode for simplicity.
+	conn, err := net.ListenUDP("udp", nil)
+	if err != nil {
+		t.Fatalf("listen error: %v", err)
+	}
+	defer conn.Close()
+	c.conn = conn
+
+	before := time.Now()
+	if err := c.sendHeartbeat(); err != nil {
+		t.Fatalf("sendHeartbeat error: %v", err)
+	}
+	after := time.Now()
+
+	c.hbTimeMu.Lock()
+	sentAt := c.lastHeartbeatSent
+	c.hbTimeMu.Unlock()
+
+	if sentAt.Before(before) || sentAt.After(after) {
+		t.Errorf("lastHeartbeatSent = %v, expected between %v and %v", sentAt, before, after)
 	}
 }

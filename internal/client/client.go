@@ -10,6 +10,7 @@ import (
 
 	"github.com/cloud/mpfpv/internal/config"
 	"github.com/cloud/mpfpv/internal/protocol"
+	"github.com/cloud/mpfpv/internal/transport"
 	"github.com/cloud/mpfpv/internal/tunnel"
 	log "github.com/sirupsen/logrus"
 )
@@ -34,6 +35,15 @@ type Client struct {
 	tunDev      tunnel.Device
 	tunReady    chan struct{} // closed when TUN is configured (auto-assign mode)
 	mu          sync.Mutex
+
+	// Multi-path support (Phase 3).
+	multipath    *transport.MultiPathSender // multi-path sender (nil when not used)
+	useMultipath bool                       // true when multipath is active
+
+	// RTT tracking: timestamp of last heartbeat sent, used to compute RTT
+	// when the corresponding HeartbeatAck arrives.
+	lastHeartbeatSent time.Time
+	hbTimeMu          sync.Mutex
 }
 
 // New creates a new Client from the given config.
@@ -127,18 +137,42 @@ func (c *Client) setupTUN() error {
 
 // Run starts the client. It blocks until ctx is cancelled.
 func (c *Client) Run(ctx context.Context) error {
-	conn, err := net.ListenUDP("udp", nil)
-	if err != nil {
-		return fmt.Errorf("client: listen UDP: %w", err)
+	// Try to create MultiPathSender for multi-NIC support.
+	// Skip multipath when the server is on loopback — bound sockets (SO_BINDTODEVICE)
+	// cannot reach 127.0.0.0/8 since loopback traffic stays on the lo interface.
+	if !c.serverAddr.IP.IsLoopback() {
+		mp, err := transport.NewMultiPathSender(c.serverAddr, c.sendMode, c.cfg.Client.ExcludedInterfaces)
+		if err == nil {
+			if startErr := mp.Start(); startErr == nil {
+				c.multipath = mp
+				c.useMultipath = true
+				log.Info("client: multipath mode enabled")
+			} else {
+				log.WithError(startErr).Warn("client: multipath start failed, falling back to single socket")
+			}
+		} else {
+			log.WithError(err).Warn("client: multipath init failed, falling back to single socket")
+		}
 	}
-	c.conn = conn
-	defer conn.Close()
+
+	// If multipath is not available, fall back to single UDP socket.
+	if !c.useMultipath {
+		conn, err := net.ListenUDP("udp", nil)
+		if err != nil {
+			return fmt.Errorf("client: listen UDP: %w", err)
+		}
+		c.conn = conn
+		defer conn.Close()
+	} else {
+		defer c.multipath.Stop()
+	}
 
 	log.WithFields(log.Fields{
-		"serverAddr": c.serverAddr.String(),
-		"clientID":   c.cfg.Client.ClientID,
-		"virtualIP":  c.virtualIP.String(),
-		"sendMode":   c.cfg.Client.SendMode,
+		"serverAddr":   c.serverAddr.String(),
+		"clientID":     c.cfg.Client.ClientID,
+		"virtualIP":    c.virtualIP.String(),
+		"sendMode":     c.cfg.Client.SendMode,
+		"useMultipath": c.useMultipath,
 	}).Info("client starting")
 
 	// Static IP mode: create TUN immediately.
@@ -155,7 +189,11 @@ func (c *Client) Run(ctx context.Context) error {
 	wg.Add(3)
 	go func() {
 		defer wg.Done()
-		c.recvLoop(recvCtx)
+		if c.useMultipath {
+			c.recvLoopMultipath(recvCtx)
+		} else {
+			c.recvLoop(recvCtx)
+		}
 	}()
 	go func() {
 		defer wg.Done()
@@ -168,7 +206,9 @@ func (c *Client) Run(ctx context.Context) error {
 
 	<-ctx.Done()
 	log.Info("client shutting down")
-	conn.Close() // unblock recvLoop
+	if c.conn != nil {
+		c.conn.Close() // unblock recvLoop
+	}
 	if c.tunDev != nil {
 		c.tunDev.Close() // unblock tunReadLoop
 	}
@@ -229,9 +269,16 @@ func (c *Client) tunReadLoop(ctx context.Context) {
 		}
 		protocol.EncodeHeader(buf, hdr)
 
-		// Send to server (Phase 1 single socket).
-		if _, err := c.conn.WriteToUDP(buf[:protocol.HeaderSize+n], c.serverAddr); err != nil {
-			log.WithError(err).Warn("failed to send TUN packet to server")
+		// Send to server via multipath or single socket.
+		pkt := buf[:protocol.HeaderSize+n]
+		if c.useMultipath {
+			if err := c.multipath.Send(pkt); err != nil {
+				log.WithError(err).Warn("failed to send TUN packet to server (multipath)")
+			}
+		} else {
+			if _, err := c.conn.WriteToUDP(pkt, c.serverAddr); err != nil {
+				log.WithError(err).Warn("failed to send TUN packet to server")
+			}
 		}
 	}
 }
@@ -260,6 +307,8 @@ func (c *Client) heartbeatLoop(ctx context.Context) {
 }
 
 // sendHeartbeat encodes and sends a single heartbeat packet to the server.
+// In multipath mode, heartbeats are sent via ALL paths (SendAll) so the
+// server learns every source address and each path gets RTT probed.
 func (c *Client) sendHeartbeat() error {
 	buf := make([]byte, protocol.HeaderSize+protocol.HeartbeatPayloadSize)
 
@@ -283,16 +332,28 @@ func (c *Client) sendHeartbeat() error {
 	c.mu.Unlock()
 	protocol.EncodeHeartbeat(buf[protocol.HeaderSize:], hb)
 
-	_, err := c.conn.WriteToUDP(buf, c.serverAddr)
-	if err != nil {
-		return fmt.Errorf("send heartbeat: %w", err)
+	// Record send time for RTT measurement.
+	c.hbTimeMu.Lock()
+	c.lastHeartbeatSent = time.Now()
+	c.hbTimeMu.Unlock()
+
+	if c.useMultipath {
+		// Send heartbeat through ALL paths so the server learns every
+		// source address and we can measure per-path RTT.
+		if err := c.multipath.SendAll(buf); err != nil {
+			return fmt.Errorf("send heartbeat (multipath): %w", err)
+		}
+	} else {
+		if _, err := c.conn.WriteToUDP(buf, c.serverAddr); err != nil {
+			return fmt.Errorf("send heartbeat: %w", err)
+		}
 	}
 
 	log.WithField("seq", seq).Debug("heartbeat sent")
 	return nil
 }
 
-// recvLoop reads packets from the UDP socket and dispatches them.
+// recvLoop reads packets from the single UDP socket and dispatches them.
 func (c *Client) recvLoop(ctx context.Context) {
 	buf := make([]byte, maxUDPPacketSize)
 	for {
@@ -334,6 +395,54 @@ func (c *Client) recvLoop(ctx context.Context) {
 			c.handleData(hdr, payload)
 		default:
 			log.WithField("type", hdr.Type).Warn("received unknown packet type")
+		}
+	}
+}
+
+// recvLoopMultipath reads packets from the MultiPathSender's receive channel
+// and dispatches them. It also tracks per-path RTT from HeartbeatAck responses.
+func (c *Client) recvLoopMultipath(ctx context.Context) {
+	for {
+		select {
+		case <-ctx.Done():
+			return
+		case pkt, ok := <-c.multipath.RecvChan():
+			if !ok {
+				return
+			}
+
+			if len(pkt.Data) < protocol.HeaderSize {
+				log.WithField("size", len(pkt.Data)).Warn("received packet too short, dropping")
+				continue
+			}
+
+			hdr, err := protocol.DecodeHeader(pkt.Data)
+			if err != nil {
+				log.WithError(err).Warn("failed to decode header")
+				continue
+			}
+
+			payload := pkt.Data[protocol.HeaderSize:]
+
+			switch hdr.Type {
+			case protocol.TypeHeartbeatAck:
+				c.handleHeartbeatAck(hdr, payload)
+
+				// Update RTT for this path based on time since last heartbeat.
+				c.hbTimeMu.Lock()
+				sentAt := c.lastHeartbeatSent
+				c.hbTimeMu.Unlock()
+				if !sentAt.IsZero() {
+					rtt := time.Since(sentAt)
+					c.multipath.UpdateRTT(pkt.FromPath, rtt)
+				}
+
+			case protocol.TypeData:
+				c.handleData(hdr, payload)
+
+			default:
+				log.WithField("type", hdr.Type).Warn("received unknown packet type")
+			}
 		}
 	}
 }
@@ -418,6 +527,12 @@ func (c *Client) Send(payload []byte) error {
 	protocol.EncodeHeader(buf, hdr)
 	copy(buf[protocol.HeaderSize:], payload)
 
+	if c.useMultipath {
+		if err := c.multipath.Send(buf); err != nil {
+			return fmt.Errorf("client send (multipath): %w", err)
+		}
+		return nil
+	}
 	_, err := c.conn.WriteToUDP(buf, c.serverAddr)
 	if err != nil {
 		return fmt.Errorf("client send: %w", err)
@@ -428,4 +543,9 @@ func (c *Client) Send(payload []byte) error {
 // IsRegistered returns whether the client has received a successful HeartbeatAck.
 func (c *Client) IsRegistered() bool {
 	return atomic.LoadInt32(&c.registered) == 1
+}
+
+// Multipath returns the MultiPathSender if multipath mode is active, or nil.
+func (c *Client) Multipath() *transport.MultiPathSender {
+	return c.multipath
 }
