@@ -1,0 +1,311 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0">
+<title>mpfpv</title>
+<style>
+*, *::before, *::after { box-sizing: border-box; margin: 0; padding: 0; }
+body {
+  font-family: 'Segoe UI', 'SF Pro', -apple-system, sans-serif;
+  background: #0d1117; color: #c9d1d9;
+  padding: 20px; max-width: 900px; margin: 0 auto;
+  font-size: 14px; line-height: 1.5;
+}
+h1 { font-size: 20px; margin-bottom: 16px; color: #58a6ff; }
+h2 { font-size: 16px; margin: 20px 0 10px; color: #8b949e; text-transform: uppercase; letter-spacing: 1px; }
+
+.card {
+  background: #161b22; border: 1px solid #30363d; border-radius: 6px;
+  padding: 16px; margin-bottom: 16px;
+}
+.card-row { display: flex; gap: 16px; flex-wrap: wrap; margin-bottom: 8px; }
+.card-item { flex: 1; min-width: 120px; }
+.card-label { font-size: 11px; color: #8b949e; text-transform: uppercase; letter-spacing: 0.5px; }
+.card-value { font-size: 16px; font-weight: 600; color: #e6edf3; margin-top: 2px; }
+
+.badge {
+  display: inline-block; padding: 2px 8px; border-radius: 12px;
+  font-size: 12px; font-weight: 600;
+}
+.badge-green { background: #0d4429; color: #3fb950; }
+.badge-red { background: #4a1525; color: #f85149; }
+.badge-yellow { background: #3d2e00; color: #d29922; }
+.badge-blue { background: #0c2d6b; color: #58a6ff; }
+
+table { width: 100%; border-collapse: collapse; }
+th { text-align: left; padding: 8px 12px; border-bottom: 2px solid #30363d; color: #8b949e; font-size: 12px; text-transform: uppercase; }
+td { padding: 8px 12px; border-bottom: 1px solid #21262d; }
+tr:hover td { background: #1c2128; }
+tr.expanded td { background: #1c2128; border-bottom: none; }
+
+.detail-row td { background: #1c2128; padding: 4px 12px 12px 40px; }
+.detail-row table { margin-top: 4px; }
+.detail-row th { font-size: 11px; border-bottom: 1px solid #30363d; }
+.detail-row td { padding: 4px 8px; border-bottom: 1px solid #21262d; }
+
+button {
+  background: #21262d; color: #c9d1d9; border: 1px solid #30363d;
+  padding: 4px 12px; border-radius: 4px; cursor: pointer; font-size: 12px;
+}
+button:hover { background: #30363d; border-color: #8b949e; }
+button.active { background: #1f6feb; border-color: #1f6feb; color: #fff; }
+button.danger { color: #f85149; }
+button.danger:hover { background: #4a1525; border-color: #f85149; }
+
+.btn-group { display: inline-flex; gap: 0; }
+.btn-group button { border-radius: 0; margin-left: -1px; }
+.btn-group button:first-child { border-radius: 4px 0 0 4px; margin-left: 0; }
+.btn-group button:last-child { border-radius: 0 4px 4px 0; }
+
+.loading { color: #8b949e; font-style: italic; }
+.error-msg { color: #f85149; }
+.active-marker { color: #3fb950; font-weight: bold; }
+#mode-label { font-size: 12px; color: #8b949e; margin-left: 8px; }
+</style>
+</head>
+<body>
+
+<h1>mpfpv <span id="mode-label"></span></h1>
+<div id="app"><span class="loading">Detecting mode...</span></div>
+
+<script>
+(function() {
+  'use strict';
+
+  var mode = null;
+  var expandedClient = null;
+  var pollTimer = null;
+
+  function detectMode() {
+    fetch('/api/status').then(function(res) {
+      if (res.ok) { mode = 'client'; }
+      else { mode = 'server'; }
+      document.getElementById('mode-label').textContent = '(' + mode + ')';
+      render();
+      startPolling();
+    }).catch(function() {
+      mode = 'server';
+      document.getElementById('mode-label').textContent = '(server)';
+      render();
+      startPolling();
+    });
+  }
+
+  function startPolling() {
+    if (pollTimer) clearInterval(pollTimer);
+    pollTimer = setInterval(doRefresh, 2000);
+    doRefresh();
+  }
+
+  function doRefresh() {
+    if (mode === 'client') refreshClient();
+    else refreshServer();
+  }
+
+  function refreshClient() {
+    Promise.all([
+      fetch('/api/status').then(function(r) { return r.json(); }),
+      fetch('/api/interfaces').then(function(r) { return r.json(); })
+    ]).then(function(results) {
+      renderClient(results[0], results[1]);
+    }).catch(function(e) {
+      document.getElementById('app').innerHTML = '<p class="error-msg">Failed to fetch status: ' + esc(e.message) + '</p>';
+    });
+  }
+
+  function renderClient(status, ifaces) {
+    var connBadge = status.connected
+      ? '<span class="badge badge-green">Connected</span>'
+      : '<span class="badge badge-red">Disconnected</span>';
+
+    var html = '<div class="card">';
+    html += '<div class="card-row">';
+    html += '<div class="card-item"><div class="card-label">Status</div><div class="card-value">' + connBadge + '</div></div>';
+    html += '<div class="card-item"><div class="card-label">Virtual IP</div><div class="card-value">' + esc(status.virtualIP || '-') + '</div></div>';
+    html += '<div class="card-item"><div class="card-label">Client ID</div><div class="card-value">' + status.clientID + '</div></div>';
+    html += '</div>';
+    html += '<div class="card-row">';
+    html += '<div class="card-item"><div class="card-label">Send Mode</div><div class="card-value">';
+    html += '<div class="btn-group">';
+    html += '<button class="' + (status.sendMode === 'redundant' ? 'active' : '') + '" onclick="mpfpv.setSendMode(\'redundant\')">Redundant</button>';
+    html += '<button class="' + (status.sendMode === 'failover' ? 'active' : '') + '" onclick="mpfpv.setSendMode(\'failover\')">Failover</button>';
+    html += '</div></div></div>';
+    html += '</div></div>';
+
+    html += '<h2>Interfaces</h2>';
+    if (!ifaces || ifaces.length === 0) {
+      html += '<div class="card"><span class="loading">No interfaces (single socket mode)</span></div>';
+    } else {
+      html += '<div class="card"><table><thead><tr>';
+      html += '<th>Name</th><th>Local IP</th><th>Status</th><th>RTT</th><th>Active</th><th></th>';
+      html += '</tr></thead><tbody>';
+      for (var i = 0; i < ifaces.length; i++) {
+        var iface = ifaces[i];
+        var statusBadge = iface.status === 'active'
+          ? '<span class="badge badge-green">active</span>'
+          : iface.status === 'suspect'
+            ? '<span class="badge badge-yellow">suspect</span>'
+            : '<span class="badge badge-red">down</span>';
+        var activeMark = iface.isActive ? '<span class="active-marker">&#9679;</span>' : '';
+        html += '<tr>';
+        html += '<td>' + esc(iface.name) + '</td>';
+        html += '<td>' + esc(iface.localIP) + '</td>';
+        html += '<td>' + statusBadge + '</td>';
+        html += '<td>' + esc(iface.rtt) + '</td>';
+        html += '<td>' + activeMark + '</td>';
+        html += '<td><button onclick="mpfpv.toggleIface(\'' + esc(iface.name) + '\')">Toggle</button></td>';
+        html += '</tr>';
+      }
+      html += '</tbody></table></div>';
+    }
+
+    document.getElementById('app').innerHTML = html;
+  }
+
+  function refreshServer() {
+    Promise.all([
+      fetch('/api/clients').then(function(r) { return r.json(); }),
+      fetch('/api/routes').then(function(r) { return r.json(); })
+    ]).then(function(results) {
+      renderServer(results[0], results[1]);
+    }).catch(function(e) {
+      document.getElementById('app').innerHTML = '<p class="error-msg">Failed to fetch data: ' + esc(e.message) + '</p>';
+    });
+  }
+
+  function renderServer(clients, routes) {
+    var html = '<h2>Clients</h2><div class="card">';
+    if (!clients || clients.length === 0) {
+      html += '<span class="loading">No clients connected</span>';
+    } else {
+      html += '<table><thead><tr>';
+      html += '<th>Client ID</th><th>Virtual IP</th><th>Send Mode</th><th>Status</th><th>Addrs</th><th>Last Seen</th><th></th>';
+      html += '</tr></thead><tbody>';
+      for (var i = 0; i < clients.length; i++) {
+        var c = clients[i];
+        var statusBadge = c.online
+          ? '<span class="badge badge-green">online</span>'
+          : '<span class="badge badge-red">offline</span>';
+        var isExpanded = expandedClient === c.clientID;
+        html += '<tr class="' + (isExpanded ? 'expanded' : '') + '" style="cursor:pointer" onclick="mpfpv.toggleClient(' + c.clientID + ')">';
+        html += '<td>' + c.clientID + '</td>';
+        html += '<td>' + esc(c.virtualIP) + '</td>';
+        html += '<td><span class="badge badge-blue">' + esc(c.sendMode) + '</span></td>';
+        html += '<td>' + statusBadge + '</td>';
+        html += '<td>' + c.addrCount + '</td>';
+        html += '<td>' + formatTime(c.lastSeen) + '</td>';
+        html += '<td><button class="danger" onclick="event.stopPropagation(); mpfpv.deleteClient(' + c.clientID + ')">Delete</button></td>';
+        html += '</tr>';
+        if (isExpanded) {
+          html += '<tr class="detail-row"><td colspan="7" id="detail-' + c.clientID + '"><span class="loading">Loading...</span></td></tr>';
+        }
+      }
+      html += '</tbody></table>';
+    }
+    html += '</div>';
+
+    html += '<h2>Route Table</h2><div class="card">';
+    if (!routes || routes.length === 0) {
+      html += '<span class="loading">No routes</span>';
+    } else {
+      html += '<table><thead><tr><th>Virtual IP</th><th>Client ID</th></tr></thead><tbody>';
+      for (var j = 0; j < routes.length; j++) {
+        var r = routes[j];
+        html += '<tr><td>' + esc(r.virtualIP) + '</td><td>' + r.clientID + '</td></tr>';
+      }
+      html += '</tbody></table>';
+    }
+    html += '</div>';
+
+    document.getElementById('app').innerHTML = html;
+
+    if (expandedClient !== null) {
+      loadClientDetail(expandedClient);
+    }
+  }
+
+  function loadClientDetail(id) {
+    var el = document.getElementById('detail-' + id);
+    if (!el) return;
+    fetch('/api/clients/' + id).then(function(res) {
+      if (!res.ok) { el.innerHTML = '<span class="error-msg">Not found</span>'; return; }
+      return res.json();
+    }).then(function(detail) {
+      if (!detail) return;
+      var h = '<strong>Source Addresses</strong>';
+      if (!detail.addrs || detail.addrs.length === 0) {
+        h += '<p class="loading">No addresses</p>';
+      } else {
+        h += '<table><thead><tr><th>Address</th><th>Last Seen</th></tr></thead><tbody>';
+        for (var k = 0; k < detail.addrs.length; k++) {
+          var a = detail.addrs[k];
+          h += '<tr><td>' + esc(a.addr) + '</td><td>' + formatTime(a.lastSeen) + '</td></tr>';
+        }
+        h += '</tbody></table>';
+      }
+      el.innerHTML = h;
+    }).catch(function(e) {
+      el.innerHTML = '<span class="error-msg">Error: ' + esc(e.message) + '</span>';
+    });
+  }
+
+  // --- Exposed actions ---
+  window.mpfpv = {
+    setSendMode: function(m) {
+      fetch('/api/sendmode', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ mode: m })
+      }).then(function() { doRefresh(); }).catch(function(e) { alert('Failed: ' + e.message); });
+    },
+    toggleIface: function(name) {
+      fetch('/api/interfaces/' + encodeURIComponent(name) + '/disable', { method: 'POST' })
+        .then(function(res) {
+          if (!res.ok) return fetch('/api/interfaces/' + encodeURIComponent(name) + '/enable', { method: 'POST' });
+        })
+        .then(function() { doRefresh(); })
+        .catch(function(e) { alert('Failed: ' + e.message); });
+    },
+    toggleClient: function(id) {
+      expandedClient = expandedClient === id ? null : id;
+      doRefresh();
+    },
+    deleteClient: function(id) {
+      if (!confirm('Delete client ' + id + '? This will release its IP allocation.')) return;
+      fetch('/api/clients/' + id, { method: 'DELETE' })
+        .then(function() { if (expandedClient === id) expandedClient = null; doRefresh(); })
+        .catch(function(e) { alert('Failed: ' + e.message); });
+    }
+  };
+
+  // --- Helpers ---
+  function esc(s) {
+    if (s == null) return '';
+    var d = document.createElement('div');
+    d.textContent = String(s);
+    return d.innerHTML;
+  }
+
+  function formatTime(iso) {
+    if (!iso) return '-';
+    try {
+      var d = new Date(iso);
+      var now = new Date();
+      var diff = Math.floor((now - d) / 1000);
+      if (diff < 5) return 'just now';
+      if (diff < 60) return diff + 's ago';
+      if (diff < 3600) return Math.floor(diff / 60) + 'm ago';
+      return d.toLocaleTimeString();
+    } catch (e) { return iso; }
+  }
+
+  function render() {
+    document.getElementById('app').innerHTML = '<span class="loading">Loading...</span>';
+  }
+
+  detectMode();
+})();
+</script>
+</body>
+</html>

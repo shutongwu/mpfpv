@@ -1,0 +1,78 @@
+# mpfpv sample configuration
+#
+# This file contains both client and server configurations.
+# Set "mode" to either "client" or "server" and fill in the
+# corresponding section. The other section can be omitted.
+
+# Operating mode: "client" or "server"
+mode: client
+
+# Team key for pairing. Must match between server and all clients.
+# Not encryption — just prevents accidental mis-connection.
+teamKey: "myteam2024"
+
+# ── Client configuration ─────────────────────────────────────────
+client:
+  # Unique client identifier (1-65535, 0 is reserved for server).
+  clientID: 1
+
+  # Virtual IP with prefix length. Leave empty for auto-assignment
+  # by the server (recommended for most setups).
+  virtualIP: "10.99.0.1/24"
+
+  # Server address (host:port).
+  serverAddr: "203.0.113.1:9800"
+
+  # Send mode:
+  #   "redundant" — send every packet via all interfaces (max reliability)
+  #   "failover"  — send via best interface, auto-switch on failure
+  sendMode: redundant
+
+  # TUN device MTU. Default: 1300.
+  mtu: 1300
+
+  # Deduplication sliding window size. Default: 4096.
+  # Larger values tolerate longer network delays at the cost of memory.
+  dedupWindow: 4096
+
+  # Network interfaces to exclude from multipath sending.
+  excludedInterfaces:
+    - "lo"
+    - "docker0"
+
+  # Web management UI listen address. Leave empty to disable.
+  # webUI: "127.0.0.1:9801"
+
+# ── Server configuration ─────────────────────────────────────────
+# Uncomment below (and set mode: server) to run as a relay server.
+#
+# server:
+#   # UDP listen address.
+#   listenAddr: "0.0.0.0:9800"
+#
+#   # Server's own virtual IP with prefix length.
+#   virtualIP: "10.99.0.254/24"
+#
+#   # Subnet for automatic IP allocation to clients.
+#   subnet: "10.99.0.0/24"
+#
+#   # Client session timeout in seconds. A client with no activity
+#   # across ALL source addresses for this long is removed.
+#   clientTimeout: 15
+#
+#   # Per-address timeout in seconds. Individual source addresses
+#   # are removed after this much inactivity, but the client session
+#   # stays alive as long as at least one address is active.
+#   addrTimeout: 5
+#
+#   # Deduplication sliding window size. Default: 4096.
+#   dedupWindow: 4096
+#
+#   # TUN device MTU. Default: 1300.
+#   mtu: 1300
+#
+#   # File to persist automatic IP allocations across restarts.
+#   ipPoolFile: "ip_pool.json"
+#
+#   # Web management UI listen address. Leave empty to disable.
+#   # webUI: "0.0.0.0:9801"

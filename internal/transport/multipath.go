@@ -291,6 +291,16 @@ func (m *MultiPathSender) PathNames() []string {
 	return names
 }
 
+// SetSendMode changes the send mode at runtime (redundant or failover).
+func (m *MultiPathSender) SetSendMode(mode uint8) {
+	m.mu.Lock()
+	m.sendMode = mode
+	if mode == protocol.SendModeFailover {
+		m.activePath = m.selectBestPathLocked()
+	}
+	m.mu.Unlock()
+}
+
 // --- internal methods ---
 
 func (m *MultiPathSender) sendRedundantLocked(data []byte) error {
