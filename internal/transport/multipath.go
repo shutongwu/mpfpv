@@ -305,11 +305,13 @@ func (m *MultiPathSender) SetSendMode(mode uint8) {
 
 func (m *MultiPathSender) sendRedundantLocked(data []byte) error {
 	var lastErr error
+	sentCount := 0
 	for _, p := range m.paths {
 		p.mu.Lock()
 		status := p.Status
 		p.mu.Unlock()
 		if status == PathDown {
+			log.Debugf("multipath: skip down path %s", p.IfaceName)
 			continue
 		}
 		if _, err := p.Conn.WriteToUDP(data, m.serverAddr); err != nil {
@@ -317,10 +319,15 @@ func (m *MultiPathSender) sendRedundantLocked(data []byte) error {
 			p.Status = PathSuspect
 			p.mu.Unlock()
 			lastErr = err
-			// Do not block other paths.
+			log.Warnf("multipath: send via %s failed: %v", p.IfaceName, err)
+		} else {
+			sentCount++
 		}
 	}
-	return lastErr
+	if sentCount == 0 && lastErr != nil {
+		return lastErr
+	}
+	return nil
 }
 
 func (m *MultiPathSender) sendFailoverLocked(data []byte) error {
