@@ -91,8 +91,16 @@ func (d *Deduplicator) IsDuplicate(clientID uint16, seq uint32) bool {
 	// diff < 0: seq is behind maxSeq
 	behind := -diff
 	if behind >= int64(d.windowSize) {
-		// too old, discard
-		return true
+		// Too far behind — likely a sender restart (seq wrapped back to 0).
+		// Reset state and accept this packet as the start of a new sequence.
+		cs.inited = false
+		for i := range cs.bitmap {
+			cs.bitmap[i] = 0
+		}
+		cs.inited = true
+		cs.maxSeq = seq
+		cs.setBit(seq, d.windowSize)
+		return false
 	}
 
 	// Check bitmap

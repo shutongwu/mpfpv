@@ -52,9 +52,9 @@ func TestDedupWindowSlide(t *testing.T) {
 	if d.IsDuplicate(1, 100) {
 		t.Fatal("seq 100 should not be dup")
 	}
-	// seq 0 is now too old (100 - 0 = 100 > 64)
-	if !d.IsDuplicate(1, 0) {
-		t.Fatal("seq 0 should be dup (too old)")
+	// seq 0 is far behind (100 - 0 = 100 > 64), treated as restart → reset and accept
+	if d.IsDuplicate(1, 0) {
+		t.Fatal("seq 0 should not be dup (treated as restart)")
 	}
 	// seq within window (100-63 = 37) should be new
 	if d.IsDuplicate(1, 37) {
@@ -65,9 +65,9 @@ func TestDedupWindowSlide(t *testing.T) {
 func TestDedupTooOld(t *testing.T) {
 	d := NewDeduplicator(64)
 	d.IsDuplicate(1, 100)
-	// seq 30 is 70 behind maxSeq=100, > windowSize=64
-	if !d.IsDuplicate(1, 30) {
-		t.Fatal("seq 30 should be dup (too old)")
+	// seq 30 is 70 behind maxSeq=100, > windowSize=64 → treated as restart
+	if d.IsDuplicate(1, 30) {
+		t.Fatal("seq 30 should not be dup (treated as restart)")
 	}
 }
 
@@ -108,9 +108,9 @@ func TestDedupSeqWraparound(t *testing.T) {
 	// The current maxSeq is start+19 (wrapped).
 	// start-1 is only 21 behind maxSeq, within window=64, and unseen => new.
 	// Test a seq that is truly too old (more than 64 behind maxSeq).
-	tooOld := start - 100 // well outside window
-	if !d.IsDuplicate(1, tooOld) {
-		t.Fatal("seq far before start should be dup (too old)")
+	tooOld := start - 100 // well outside window → treated as restart
+	if d.IsDuplicate(1, tooOld) {
+		t.Fatal("seq far before start should not be dup (treated as restart)")
 	}
 }
 
@@ -128,9 +128,9 @@ func TestDedupLargeJump(t *testing.T) {
 	if d.IsDuplicate(1, 10000) {
 		t.Fatal("large jump should not be dup")
 	}
-	// Everything old should be dup
-	if !d.IsDuplicate(1, 0) {
-		t.Fatal("old seq after large jump should be dup")
+	// seq 0 is far behind 10000 (> window) → treated as restart, reset and accept
+	if d.IsDuplicate(1, 0) {
+		t.Fatal("seq 0 after large jump should not be dup (treated as restart)")
 	}
 }
 
@@ -147,9 +147,9 @@ func TestDedupBitmapReuse(t *testing.T) {
 	if d.IsDuplicate(1, 8) {
 		t.Fatal("seq 8 should not be dup")
 	}
-	// seq 0 is too old
-	if !d.IsDuplicate(1, 0) {
-		t.Fatal("seq 0 should be dup after slide")
+	// seq 0 is behind by 8 (= windowSize) → treated as restart, reset and accept
+	if d.IsDuplicate(1, 0) {
+		t.Fatal("seq 0 should not be dup after slide (treated as restart)")
 	}
 	// Slide further and verify new seqs work
 	if d.IsDuplicate(1, 15) {
