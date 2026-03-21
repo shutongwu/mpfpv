@@ -90,6 +90,8 @@ type MultiPathSender struct {
 	lastSwitch     time.Time        // anti-ping-pong: last path switch time
 	switchCooldown time.Duration
 	recvCh         chan RecvPacket
+	recvConn       *net.UDPConn     // central unbound recv socket (NIC-independent)
+	recvPort       uint16           // port of recvConn, sent in heartbeat as ReplyPort
 	mu             sync.RWMutex
 	watcher        *InterfaceWatcher
 	stopCh         chan struct{}
@@ -117,7 +119,22 @@ func NewMultiPathSender(serverAddr *net.UDPAddr, sendMode uint8, excluded []stri
 
 // Start begins interface monitoring and creates initial paths.
 func (m *MultiPathSender) Start() error {
+	// Create central unbound receive socket. This socket is not tied to any
+	// NIC, so it survives NIC removal events without interruption.
+	recvConn, err := net.ListenUDP("udp4", &net.UDPAddr{IP: net.IPv4zero, Port: 0})
+	if err != nil {
+		return fmt.Errorf("transport: create recv socket: %w", err)
+	}
+	m.recvConn = recvConn
+	m.recvPort = uint16(recvConn.LocalAddr().(*net.UDPAddr).Port)
+	log.WithField("port", m.recvPort).Info("central recv socket created")
+
+	// Start central receive loop.
+	m.wg.Add(1)
+	go m.centralRecvLoop()
+
 	if err := m.watcher.Start(); err != nil {
+		recvConn.Close()
 		return fmt.Errorf("transport: start watcher: %w", err)
 	}
 
@@ -137,6 +154,13 @@ func (m *MultiPathSender) Start() error {
 	return nil
 }
 
+// RecvPort returns the central receive socket's port number.
+// The client should include this in heartbeat ReplyPort so the server
+// sends data to this port instead of the per-NIC send socket ports.
+func (m *MultiPathSender) RecvPort() uint16 {
+	return m.recvPort
+}
+
 // Stop shuts down all paths and the interface watcher.
 func (m *MultiPathSender) Stop() {
 	select {
@@ -154,6 +178,10 @@ func (m *MultiPathSender) Stop() {
 		delete(m.paths, name)
 	}
 	m.mu.Unlock()
+
+	if m.recvConn != nil {
+		m.recvConn.Close()
+	}
 
 	m.wg.Wait()
 }
@@ -453,10 +481,6 @@ func (m *MultiPathSender) addPath(info *InterfaceInfo) {
 		"iface": info.Name,
 		"addr":  localAddr.String(),
 	}).Info("path added")
-
-	// Start a receive goroutine for this path.
-	m.wg.Add(1)
-	go m.recvLoop(p)
 }
 
 // removePath closes and removes the path for the named interface.
@@ -475,26 +499,20 @@ func (m *MultiPathSender) removePath(name string) {
 	}
 }
 
-// recvLoop reads packets from a single path's socket and delivers them to
-// the shared recvCh.
-func (m *MultiPathSender) recvLoop(p *Path) {
+// centralRecvLoop reads packets from the central unbound receive socket.
+// This socket is not tied to any NIC, so it survives NIC removal events.
+func (m *MultiPathSender) centralRecvLoop() {
 	defer m.wg.Done()
 	buf := make([]byte, recvBufSize)
 	for {
-		n, addr, err := p.Conn.ReadFromUDP(buf)
+		n, addr, err := m.recvConn.ReadFromUDP(buf)
 		if err != nil {
-			// Check if we are shutting down or path was deliberately removed.
 			select {
 			case <-m.stopCh:
 				return
-			case <-p.closeCh:
-				return
 			default:
 			}
-			// Transient error (e.g. kernel route table rebuild when another
-			// NIC is unplugged). Retry instead of exiting so the surviving
-			// path's receive goroutine stays alive.
-			log.Debugf("recvLoop %s: read error (retrying): %v", p.IfaceName, err)
+			log.Debugf("centralRecvLoop: read error (retrying): %v", err)
 			time.Sleep(50 * time.Millisecond)
 			continue
 		}
@@ -504,7 +522,7 @@ func (m *MultiPathSender) recvLoop(p *Path) {
 		select {
 		case m.recvCh <- RecvPacket{
 			Data:     data,
-			FromPath: p.IfaceName,
+			FromPath: "central",
 			Addr:     addr,
 		}:
 		case <-m.stopCh:

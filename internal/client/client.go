@@ -369,10 +369,15 @@ func (c *Client) sendHeartbeat() error {
 	protocol.EncodeHeader(buf, hdr)
 
 	c.mu.Lock()
+	var replyPort uint16
+	if c.multipath != nil {
+		replyPort = c.multipath.RecvPort()
+	}
 	hb := &protocol.HeartbeatPayload{
 		VirtualIP:   c.virtualIP,
 		PrefixLen:   c.prefixLen,
 		SendMode:    c.sendMode,
+		ReplyPort:   replyPort,
 		TeamKeyHash: c.teamKeyHash,
 	}
 	c.mu.Unlock()

@@ -30,6 +30,7 @@ type ClientSession struct {
 	VirtualIP  net.IP
 	PrefixLen  uint8
 	SendMode   uint8              // protocol.SendModeRedundant or SendModeFailover
+	ReplyPort  uint16             // central recv port; 0 = use source port (legacy)
 	DeviceName string             // device name reported by client
 	Addrs      map[string]*AddrInfo // srcAddr string -> info
 	LastSeen   time.Time
@@ -349,6 +350,7 @@ func (s *Server) handleHeartbeat(hdr protocol.Header, payload []byte, from *net.
 			VirtualIP:  assignedIP,
 			PrefixLen:  assignedPrefix,
 			SendMode:   hb.SendMode,
+			ReplyPort:  hb.ReplyPort,
 			DeviceName: hb.DeviceName,
 			Addrs:      make(map[string]*AddrInfo),
 			LastSeen:   now,
@@ -369,6 +371,7 @@ func (s *Server) handleHeartbeat(hdr protocol.Header, payload []byte, from *net.
 	} else {
 		// Update existing session.
 		session.SendMode = hb.SendMode
+		session.ReplyPort = hb.ReplyPort
 		session.LastSeen = now
 		if hb.DeviceName != "" {
 			session.DeviceName = hb.DeviceName
@@ -489,6 +492,7 @@ func (s *Server) sendToClient(clientID uint16, rawPacket []byte) {
 	}
 
 	sendMode := session.SendMode
+	replyPort := session.ReplyPort
 	addrs := make([]*AddrInfo, 0, len(session.Addrs))
 	for _, ai := range session.Addrs {
 		addrs = append(addrs, ai)
@@ -499,32 +503,42 @@ func (s *Server) sendToClient(clientID uint16, rawPacket []byte) {
 		return
 	}
 
+	// Build destination addresses. If the client advertised a ReplyPort
+	// (central recv socket), rewrite the port so packets arrive on the
+	// NIC-independent socket instead of the per-NIC send socket.
+	dstAddrs := make([]*net.UDPAddr, len(addrs))
+	for i, ai := range addrs {
+		if replyPort > 0 {
+			dstAddrs[i] = &net.UDPAddr{IP: ai.Addr.IP, Port: int(replyPort), Zone: ai.Addr.Zone}
+		} else {
+			dstAddrs[i] = ai.Addr
+		}
+	}
+
 	switch sendMode {
 	case protocol.SendModeRedundant:
 		// Send to all known addresses.
-		for _, ai := range addrs {
-			if _, err := s.conn.WriteToUDP(rawPacket, ai.Addr); err != nil {
-				log.Warnf("server: write to %s for clientID=%d: %v", ai.Addr, clientID, err)
+		for _, dst := range dstAddrs {
+			if _, err := s.conn.WriteToUDP(rawPacket, dst); err != nil {
+				log.Warnf("server: write to %s for clientID=%d: %v", dst, clientID, err)
 			}
 		}
 	case protocol.SendModeFailover:
 		// Send to the most recently active address.
-		var best *AddrInfo
-		for _, ai := range addrs {
-			if best == nil || ai.LastSeen.After(best.LastSeen) {
-				best = ai
+		var bestIdx int
+		for i, ai := range addrs {
+			if i == 0 || ai.LastSeen.After(addrs[bestIdx].LastSeen) {
+				bestIdx = i
 			}
 		}
-		if best != nil {
-			if _, err := s.conn.WriteToUDP(rawPacket, best.Addr); err != nil {
-				log.Warnf("server: write to %s for clientID=%d: %v", best.Addr, clientID, err)
-			}
+		if _, err := s.conn.WriteToUDP(rawPacket, dstAddrs[bestIdx]); err != nil {
+			log.Warnf("server: write to %s for clientID=%d: %v", dstAddrs[bestIdx], clientID, err)
 		}
 	default:
 		// Default to redundant.
-		for _, ai := range addrs {
-			if _, err := s.conn.WriteToUDP(rawPacket, ai.Addr); err != nil {
-				log.Warnf("server: write to %s for clientID=%d: %v", ai.Addr, clientID, err)
+		for _, dst := range dstAddrs {
+			if _, err := s.conn.WriteToUDP(rawPacket, dst); err != nil {
+				log.Warnf("server: write to %s for clientID=%d: %v", dst, clientID, err)
 			}
 		}
 	}

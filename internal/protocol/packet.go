@@ -50,8 +50,8 @@ func EncodeHeartbeat(buf []byte, hb *HeartbeatPayload) {
 	copy(buf[0:4], ip)
 	buf[4] = hb.PrefixLen
 	buf[5] = hb.SendMode
-	buf[6] = 0
-	buf[7] = 0
+	buf[6] = byte(hb.ReplyPort >> 8)
+	buf[7] = byte(hb.ReplyPort)
 	copy(buf[8:16], hb.TeamKeyHash[:])
 }
 
@@ -68,6 +68,7 @@ func DecodeHeartbeat(buf []byte) (HeartbeatPayload, error) {
 		VirtualIP:   net.IP(append([]byte(nil), buf[0:4]...)),
 		PrefixLen:   buf[4],
 		SendMode:    buf[5],
+		ReplyPort:   uint16(buf[6])<<8 | uint16(buf[7]),
 		TeamKeyHash: hash,
 	}
 	if len(buf) > HeartbeatPayloadSize {

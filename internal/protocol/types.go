@@ -52,6 +52,7 @@ type HeartbeatPayload struct {
 	VirtualIP   net.IP   // 4 bytes IPv4
 	PrefixLen   uint8
 	SendMode    uint8
+	ReplyPort   uint16   // central recv socket port; 0 = use source port (legacy)
 	TeamKeyHash [8]byte
 	DeviceName  string   // optional, from extended payload (beyond 16 bytes)
 }
