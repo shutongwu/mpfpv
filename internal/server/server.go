@@ -219,8 +219,8 @@ func (s *Server) tunReadLoop(ctx context.Context) {
 				return
 			default:
 			}
-			log.Warnf("server: TUN read error: %v", err)
-			return
+			log.Warnf("server: TUN read error: %v (continuing)", err)
+			continue
 		}
 
 		if n < 20 {

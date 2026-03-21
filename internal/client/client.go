@@ -280,8 +280,8 @@ func (c *Client) tunReadLoop(ctx context.Context) {
 				return
 			default:
 			}
-			log.WithError(err).Warn("TUN read error")
-			return
+			log.WithError(err).Warn("TUN read error (continuing)")
+			continue
 		}
 		if n < 20 {
 			continue
