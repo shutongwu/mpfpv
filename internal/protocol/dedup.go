@@ -103,6 +103,14 @@ func (d *Deduplicator) IsDuplicate(clientID uint16, seq uint32) bool {
 	return false
 }
 
+// Reset clears dedup state for a clientID so that reconnecting clients
+// are not falsely rejected when their seq counter restarts from zero.
+func (d *Deduplicator) Reset(clientID uint16) {
+	d.mu.Lock()
+	delete(d.clients, clientID)
+	d.mu.Unlock()
+}
+
 func (cs *clientState) setBit(seq uint32, windowSize uint32) {
 	idx := seq % windowSize
 	cs.bitmap[idx/64] |= 1 << (idx % 64)

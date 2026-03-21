@@ -739,6 +739,7 @@ func (s *Server) cleanup() {
 				s.routeLock.Unlock()
 			}
 			delete(s.sessions, clientID)
+			s.dedup.Reset(clientID)
 			log.Infof("server: clientID=%d session timed out, removed", clientID)
 		}
 	}

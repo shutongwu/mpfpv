@@ -292,6 +292,19 @@ func (c *Client) tunReadLoop(ctx context.Context) {
 			continue
 		}
 
+		// Rewrite inner source IP to our virtualIP.
+		// On Windows, other TUN adapters (e.g. Clash Meta) may cause the OS
+		// to select a wrong source address. Force it to our assigned IP so
+		// the server's srcIP validation passes.
+		c.mu.Lock()
+		vip4 := c.virtualIP
+		c.mu.Unlock()
+		if len(vip4) == 4 && !vip4.Equal(net.IPv4zero) {
+			copy(buf[protocol.HeaderSize+12:protocol.HeaderSize+16], vip4)
+			// Recalculate IPv4 header checksum after modifying source IP.
+			recalcIPv4Checksum(buf[protocol.HeaderSize : protocol.HeaderSize+n])
+		}
+
 		// Encapsulate with header.
 		seq := atomic.AddUint32(&c.seq, 1) - 1
 		hdr := &protocol.Header{
@@ -612,4 +625,27 @@ func resolveInterfaceAddr(ifaceName string) (net.IP, error) {
 		}
 	}
 	return nil, fmt.Errorf("no IPv4 address on interface %q", ifaceName)
+}
+
+// recalcIPv4Checksum recalculates the IPv4 header checksum in-place.
+func recalcIPv4Checksum(ipHeader []byte) {
+	ihl := int(ipHeader[0]&0x0f) * 4
+	if ihl < 20 || ihl > len(ipHeader) {
+		return
+	}
+	// Clear existing checksum.
+	ipHeader[10] = 0
+	ipHeader[11] = 0
+	// Compute sum over header words.
+	var sum uint32
+	for i := 0; i < ihl; i += 2 {
+		sum += uint32(ipHeader[i])<<8 | uint32(ipHeader[i+1])
+	}
+	// Fold carry bits.
+	for sum > 0xffff {
+		sum = (sum >> 16) + (sum & 0xffff)
+	}
+	cs := ^uint16(sum)
+	ipHeader[10] = byte(cs >> 8)
+	ipHeader[11] = byte(cs)
 }
