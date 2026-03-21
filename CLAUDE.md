@@ -4,136 +4,203 @@ This file provides guidance to Claude Code (claude.ai/code) when working with co
 
 ## Project Overview
 
-**mpfpv** is a pure-userspace, single-binary networking tool (Go) for drone-to-ground-station communication via a cloud relay server. It combines multi-path UDP redundancy (inspired by engarde) with built-in TUN-based virtual IP networking — replacing the need for both engarde and WireGuard.
+**mpfpv** 是一个纯用户态、单二进制的组网工具（Go），用于无人机与地面站通过云服务器中继通信。整合了多路径 UDP 冗余（类似 engarde）和 TUN 虚拟 IP 组网（类似 WireGuard），替代了同时需要 engarde + WireGuard 的方案。
 
-Star topology: all traffic routes through the server. No peer-to-peer direct connections (by design, though the architecture reserves room for future P2P).
+**星形拓扑**：所有流量经服务器中转，客户端之间不直连。
 
-**No encryption by design** — this is intentional, not an oversight. The `teamKey` mechanism is only for pairing validation (prevents accidental cross-connect), not security.
+**不加密**：这是设计决策。`teamKey` 仅用于配对校验（防误连），不是安全机制。
 
 ## Build & Run
 
 ```bash
-# Build (once go.mod exists)
+# 本地构建
 go build -o mpfpv ./cmd/mpfpv/
 
-# Cross-compile (CGO_ENABLED=0 required for static binaries)
-make linux-arm        # OpenIPC drone boards
-make linux-arm64      # Radxa etc.
-make linux-amd64      # cloud server
-make windows-amd64    # ground station
-make darwin-arm64     # macOS ground station
+# 交叉编译（全部目标）
+make all                  # = server + client(x86/arm/windows)
+make server               # build/server/mpfpv-linux-amd64
+make client-x86           # build/client/x86/mpfpv-linux-amd64
+make client-arm           # build/client/arm/mpfpv-linux-arm64
+make client-windows       # build/client/windows/mpfpv-windows-amd64.exe
+make client-windows-gui   # build/client/windows/mpfpv-gui.exe (WebView2 GUI)
+make client-darwin        # build/client/darwin/mpfpv-darwin-arm64
+make client-mipsle        # build/client/mipsle/mpfpv-linux-mipsle (OpenIPC)
 
-# Run
-./mpfpv -config mpfpv.yml          # mode determined by config file
-./mpfpv --mode server              # or via CLI flag
+# 运行
+./mpfpv -config mpfpv.yml -v     # -v 开启 debug 日志
+./mpfpv -version                 # 查看版本号
 
-# Test
-go test ./...
-go test ./internal/protocol/...    # single package
-go test -run TestDedup ./internal/protocol/
+# 测试
+go test ./...                                    # 单元测试
+go test -tags integration -v ./test/...          # 集成测试
+go test -run TestDedup ./internal/protocol/      # 单个测试
+```
+
+## 构建产物目录结构
+
+```
+build/
+├── server/
+│   └── mpfpv-linux-amd64           # 服务器（仅 Linux amd64）
+└── client/
+    ├── x86/mpfpv-linux-amd64       # Linux x86 客户端
+    ├── arm/mpfpv-linux-arm64       # ARM64 客户端（Radxa 等）
+    └── windows/
+        ├── mpfpv-windows-amd64.exe # Windows 命令行客户端
+        └── mpfpv-gui.exe           # Windows GUI 客户端（WebView2）
 ```
 
 ## Architecture
 
-### Binary modes
-Single binary, two modes selected by config `mode: client | server`.
+### 两种入口
 
-### Protocol
-Custom 8-byte UDP header (4-byte aligned for ARM):
-- Byte 0: Flags (version + message type: Data/Heartbeat/HeartbeatAck)
-- Bytes 2-3: Client ID (uint16)
-- Bytes 4-7: Sequence number (uint32, per-clientID)
-- Bytes 8-N: Raw IP packet payload
+| 入口 | 说明 |
+|------|------|
+| `cmd/mpfpv/` | 命令行入口，按 config `mode` 分发到 server 或 client |
+| `cmd/mpfpv-gui/` | Windows GUI 入口，使用 WebView2 原生窗口内嵌 Web UI，支持连接/断开/配置 |
 
-### Key packages (planned layout)
+### 协议
 
-| Package | Role |
+自定义 8 字节 UDP 封装头（4 字节对齐，ARM 友好）：
+
+```
+Byte 0:     Flags (高4位=Version1, 低4位=Type: Data/Heartbeat/HeartbeatAck)
+Byte 1:     Reserved
+Bytes 2-3:  Client ID (uint16, big-endian)
+Bytes 4-7:  Sequence Number (uint32, big-endian, per-clientID 递增)
+Bytes 8-N:  Payload (原始 IP 包 或 Heartbeat/Ack 结构)
+```
+
+Heartbeat payload（固定 16 字节 + 可变长设备名）：
+- 前 16 字节：VirtualIP(4) + PrefixLen(1) + SendMode(1) + Reserved(2) + TeamKeyHash(8)
+- 16 字节之后：UTF-8 设备名字符串（可选，向后兼容）
+
+### 包结构
+
+| Package | 职责 |
 |---------|------|
-| `cmd/mpfpv/` | Entry point, dispatches by mode |
-| `internal/client/` | Client main loop — TUN read → encapsulate → multi-NIC send; UDP recv → dedup → TUN write |
-| `internal/server/` | Server main loop — session/route table management, heartbeat handling, packet forwarding |
-| `internal/tunnel/` | TUN device abstraction with platform-specific implementations (`_linux`, `_windows`, `_darwin`) |
-| `internal/transport/` | Multi-NIC discovery (netlink or polling), `SO_BINDTODEVICE` binding, multi-path sender, receiver+dedup |
-| `internal/protocol/` | Header codec, sliding-window dedup bitmap, constants/types |
-| `internal/config/` | YAML config parsing |
-| `internal/web/` | Embedded Web UI (`go:embed`) + JSON API for runtime status/control |
+| `internal/protocol/` | 8 字节头编解码、Heartbeat/Ack 编解码、滑动窗口去重(bitmap)、TeamKeyHash |
+| `internal/config/` | YAML 配置解析、校验、默认值、SaveConfig |
+| `internal/tunnel/` | TUN 设备抽象 + 平台实现（Linux: 纯 syscall; Windows: wintun+go:embed; macOS: 桩） |
+| `internal/transport/` | 网卡发现(白名单+轮询)、SO_BINDTODEVICE、多路径发送器(redundant/failover)、RTT 跟踪 |
+| `internal/server/` | 服务端：UDP 监听、Heartbeat/会话管理、路由表、数据转发、IP 自动分配(持久化)、超时清理 |
+| `internal/client/` | 客户端：心跳循环、收发包、TUN 读写、多路径/单网卡模式切换、设备名+machineID |
+| `internal/web/` | 嵌入式 Web UI（go:embed HTML）+ JSON API（客户端/服务端/GUI 控制） |
 
-### Data flow
-- **Client uplink**: App → TUN → mpfpv encapsulate (add 8-byte header) → send via all NICs (redundant) or best NIC (failover) → server
-- **Server forwarding**: UDP recv → dedup (per-clientID sliding window) → validate inner IP src matches registered virtualIP → read dest IP → route table lookup → encapsulate → send to target client (respecting their sendMode)
-- **Client downlink**: UDP recv → dedup → strip header → write to TUN → App
+### 数据流
 
-### Concurrency model
-- Server: G1 UDP recv loop, G2 TUN read loop, G3 timeout cleanup timer
-- Client: G1 TUN read→send, G2 UDP recv→TUN write, G3 NIC discovery (netlink/poll), G4 heartbeat timer, GN per-NIC receiver goroutine
-- Shared state: `sync.RWMutex` for route/session tables; per-clientID dedup bitmaps (no lock contention); `sync.Pool` for packet buffers
+```
+[App] → TUN → client encapsulate(+8B header) → UDP multipath → [Server]
+[Server] → UDP recv → dedup → validate srcIP → route lookup → forward to target client
+[Target Client] → UDP recv → dedup → strip header → TUN write → [App]
+```
 
-### Multi-path strategy
-- **redundant**: every packet sent via all NICs; max reliability, bandwidth × N
-- **failover**: best NIC only (by heartbeat RTT), auto-switch on failure with anti-flap protection
+服务器自身 TUN 流量使用 clientID=0。
 
-### Heartbeat design
-- Data packets serve as keepalive when traffic flows; heartbeats only fire after idle threshold (default 200ms)
-- In failover mode, heartbeats always go through ALL NICs (to maintain RTT measurements), only Data packets follow single-NIC rule
-- Server learns routes exclusively from heartbeats, never from data packet inner IPs
+### 设备识别与 IP 分配
 
-## Agent Team Structure
+- **clientID** = FNV-1a hash(hostname + machineID)，自动生成，同机器永远一致
+  - Linux machineID: `/etc/machine-id`
+  - Windows machineID: 注册表 `HKLM\SOFTWARE\Microsoft\Cryptography\MachineGuid`
+- **virtualIP** 由服务器统一分配，客户端不配置
+- **设备名**（hostname）随 Heartbeat 发送，服务端显示用
+- IP 分配持久化到 `ip_pool.json`：`[{clientID, ip, name}]`，同一设备重连拿到同一 IP
 
-本项目由 agent team 协作开发，结构如下：
+### 网卡发现（白名单模式）
 
-### 项目负责人（主 agent）
-- 定义模块间接口契约（Go interface）
-- 协调各组进度、分配任务、解决阻塞
-- Code review、架构决策
-- 最终集成交付
+只使用真实物理网卡，不用黑名单：
+- Linux: `eth*`, `enp*`, `ens*`, `eno*`, `enx*`, `wlan*`, `wlp*`, `wlx*`, `usb*`
+- Windows: 名称含 `Wi-Fi`/`Ethernet`/`以太网`/`USB`/`WLAN`
+- macOS: `en*`
+- IP 段过滤：排除 `169.254/16`(link-local)、`100.64/10`(Tailscale/CGNAT)、`10.99/16`(自身虚拟IP)
+- 非 IPv4 包过滤：TUN 读出的包检查 IP 版本字段，非 IPv4 直接丢弃
 
-### 三个开发组
+### Windows 客户端特殊处理
 
-| 组 | 负责包 | 开发职责 | 组内 QA 职责 |
-|---|---|---|---|
-| **协议/传输组** | `protocol/`, `transport/` | 头编解码、去重位图、buffer pool、多网卡发现、SO_BINDTODEVICE、多路径发送、failover RTT | 丢包/乱序模拟、窗口边界、网卡热插拔测试 |
-| **服务端组** | `server/`, `config/` | 会话管理、路由表、heartbeat 处理、转发、超时清理、IP 分配持久化、配置解析 | 并发会话、超时清理、teamKey 校验、路由正确性测试 |
-| **客户端/TUN组** | `client/`, `tunnel/` | TUN 三平台实现、客户端主循环、heartbeat 定时、收发包 | TUN 读写 mock、heartbeat 状态机、自动分配流程测试 |
+- **单网卡模式**：通过 `bindInterface` 配置项指定网卡，跳过多路径
+- **GUI**（`cmd/mpfpv-gui/`）：使用 `jchv/go-webview2`（纯 Go，无 CGO）创建原生窗口
+- **wintun.dll**：通过 `go:embed` 嵌入二进制，运行时自动释放到 exe 同目录
+- **配置极简**：用户只需填服务器地址 + Team Key + 选网卡
 
-### 总 QA（独立角色，兼 Web UI 开发）
-- **集成测试**：多 client + server 端到端全链路
-- **故障注入**：拔网卡、杀进程、服务器重启恢复
-- **硬件验证**：OpenIPC / 树莓派 / Windows / macOS 部署
-- **性能基准**：视频流延迟、切换耗时、GC 毛刺
-- **Web UI**：`internal/web/` JSON API + 嵌入式单页 HTML
-- **回归测试**：每个 Phase 交付后全量回归
+### 多路径策略
 
-### 组内 QA vs 总 QA 分工
+- **redundant**：每个包通过所有活跃网卡各发一份，最大可靠性
+- **failover**：只走 RTT 最优网卡，故障自动切换（5 秒防乒乓冷却）
+- 心跳始终通过所有网卡发送（即使 failover 模式），保证 RTT 探测
+- RTT 滑动窗口 10 个样本，连续 5 次 miss 标记 Down
 
-| | 组内 QA | 总 QA |
-|---|---|---|
-| 范围 | 单模块内 | 跨模块 + 端到端 |
-| 测试类型 | 单元测试、接口 mock | 集成测试、真机测试、故障注入 |
-| 时机 | 开发同步 | Phase 交付节点 |
+### Web UI
 
-## Reference Code
+嵌入式单页 HTML（`internal/web/static/index.html`），原生 JS，2 秒轮询 API。
 
-`可参考项目/engarde/` contains the engarde source. Key files to reference:
-- `cmd/engarde-client/main.go` — multi-NIC discovery + forwarding logic
-- `cmd/engarde-client/udpconn_bindtodevice.go` — `SO_BINDTODEVICE` syscall
-- `cmd/engarde-server/main.go` — client tracking + broadcast reply
-- `engarde.yml.sample` — config format
-- `Makefile` — cross-compile targets
+**服务端 API**：
+- `GET /api/clients` / `GET /api/clients/{id}` / `DELETE /api/clients/{id}`
+- `GET /api/routes`
+- `GET/POST /api/server-config`（修改 teamKey/listenAddr）
+
+**客户端 API**：
+- `GET /api/status` / `GET /api/interfaces`
+- `POST /api/sendmode` / `POST /api/interfaces/{name}/{enable|disable}`
+
+**GUI 控制 API**（仅 Windows GUI）：
+- `GET/POST /api/config` / `POST /api/connect` / `POST /api/disconnect`
+- `GET /api/connection-status` / `GET /api/available-interfaces`
+
+### 并发模型
+
+- **Server**: G1 UDP recv loop, G2 TUN read loop, G3 cleanup timer (1s)
+- **Client**: G1 TUN read→send, G2 UDP recv→TUN write (或 multipath recv channel), G3 NIC discovery polling (200ms), G4 heartbeat timer (1s)
+- 共享状态: `sync.RWMutex`(sessions/routes), per-clientID dedup bitmap(无锁竞争), `sync/atomic`(seq/registered)
+
+### 超时机制
+
+- **addrTimeout** (默认 5s)：单个源地址超时移除，但只要还有活跃地址不删 session
+- **clientTimeout** (默认 15s)：所有地址均无活动才删除整个 session + 路由
+
+## 当前部署环境
+
+| 节点 | IP | 虚拟 IP | 说明 |
+|------|-----|---------|------|
+| 阿里云 ECS | 114.55.58.24 | 10.99.0.254 | 服务器，UDP :9800，Web UI :9801 |
+| PVE Ubuntu VM | 192.168.1.197 | 10.99.0.1 | 测试客户端 (ubuntu-dev) |
+| Radxa Zero3 | (Tailscale) | 10.99.0.3 | 无人机端客户端 (radxa-zero3) |
+| Windows PC | (WLAN) | 10.99.0.2 | 地面站 GUI 客户端 (DESKTOP-QE166QH) |
+
+**注意**：绝对不要在 PVE 宿主机（192.168.1.100）上部署，会干扰整个网络。用 PVE 内的 Ubuntu VM。
+
+## 已知问题与待办
+
+### 已知问题
+- Windows TUN 稳定性偶发问题（偶尔 ping 丢包），疑似 wintun 驱动或防火墙干扰
+- Windows 上 Clash TUN 模式会冲突（198.18.0.1 fake-ip），需关闭 Clash 或加直连规则
+- 心跳和数据共用 seq 计数器，多播/广播包消耗 seq 导致有效数据 seq 跳号
+
+### 待优化
+- Linux netlink 事件驱动网卡检测（当前仅轮询）
+- buffer pool (`sync.Pool`) 减少 GC
+- HeartbeatAck 中继续打印 "registered" 已修复，但 debug 级别的 heartbeat sent 日志仍会每秒输出
+- macOS TUN 实现（当前为桩）
+- 考虑 Windows 端改为端口转发模式替代 TUN，彻底避免驱动/防火墙问题
 
 ## Tech Stack
 
-| Item | Choice |
-|------|--------|
-| Language | Go |
-| TUN library | `golang.zx2c4.com/wireguard/tun` |
-| Logging | `github.com/sirupsen/logrus` |
-| Config | `gopkg.in/yaml.v3` |
-| NIC binding | `SO_BINDTODEVICE` (Linux), address binding (Windows/macOS) |
+| 项 | 选择 |
+|----|------|
+| 语言 | Go 1.23+ |
+| TUN 库 | Linux: 纯 syscall; Windows: `golang.zx2c4.com/wireguard/tun` + wintun |
+| Windows GUI | `github.com/jchv/go-webview2`（纯 Go，无 CGO） |
+| 日志 | `github.com/sirupsen/logrus` |
+| 配置 | `gopkg.in/yaml.v3` |
+| 网卡绑定 | `SO_BINDTODEVICE` (Linux), 地址绑定 (Windows/macOS) |
 
-## Platform Notes
+## 参考代码
 
-- Linux NIC detection: prefer netlink (`RTM_NEWADDR`/`RTM_DELADDR`) for <10ms detection; fallback to 200ms polling
-- `SO_BINDTODEVICE` requires root or `CAP_NET_RAW`
-- TUN on OpenIPC may need kernel `CONFIG_TUN=y`
-- Default TUN MTU: 1300
-- Dedup window: 4096 packets (covers ~3.9s at 5Mbps video with 2-NIC redundancy)
+`可参考项目/engarde/` 包含 engarde 源码，关键参考文件：
+- `cmd/engarde-client/main.go` — 多网卡发现 + 转发逻辑
+- `cmd/engarde-client/udpconn_bindtodevice.go` — SO_BINDTODEVICE 实现
+- `cmd/engarde-server/main.go` — 客户端追踪 + 广播回包
+
+## Commit 规范
+
+- Commit message 使用中文
+- 标准格式：`feat:` / `fix:` / `refactor:` / `test:` + 中文描述
