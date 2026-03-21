@@ -333,22 +333,56 @@ func (m *MultiPathSender) SetSendMode(mode uint8) {
 // --- internal methods ---
 
 func (m *MultiPathSender) sendRedundantLocked(data []byte) error {
-	var lastErr error
-	sentCount := 0
+	// Collect active paths.
+	var active []*Path
 	for _, p := range m.paths {
 		p.mu.Lock()
 		status := p.Status
 		p.mu.Unlock()
 		if status == PathDown {
-			log.Debugf("multipath: skip down path %s", p.IfaceName)
 			continue
 		}
-		if _, err := p.Conn.WriteToUDP(data, m.serverAddr); err != nil {
-			p.mu.Lock()
-			p.Status = PathSuspect
-			p.mu.Unlock()
-			lastErr = err
-			log.Warnf("multipath: send via %s failed: %v", p.IfaceName, err)
+		active = append(active, p)
+	}
+	if len(active) == 0 {
+		return fmt.Errorf("transport: no available paths")
+	}
+	if len(active) == 1 {
+		// Single path — send directly, no goroutine overhead.
+		if _, err := active[0].Conn.WriteToUDP(data, m.serverAddr); err != nil {
+			active[0].mu.Lock()
+			active[0].Status = PathSuspect
+			active[0].mu.Unlock()
+			return err
+		}
+		return nil
+	}
+	// Multiple paths — send in parallel so a blocking write on one
+	// dying NIC doesn't delay sends on healthy NICs.
+	type sendResult struct {
+		p   *Path
+		err error
+	}
+	ch := make(chan sendResult, len(active))
+	for _, p := range active {
+		p := p // capture
+		go func() {
+			// Set a short write deadline to prevent blocking on dying sockets.
+			p.Conn.SetWriteDeadline(time.Now().Add(100 * time.Millisecond))
+			_, err := p.Conn.WriteToUDP(data, m.serverAddr)
+			p.Conn.SetWriteDeadline(time.Time{}) // clear deadline
+			ch <- sendResult{p, err}
+		}()
+	}
+	var lastErr error
+	sentCount := 0
+	for range active {
+		r := <-ch
+		if r.err != nil {
+			r.p.mu.Lock()
+			r.p.Status = PathSuspect
+			r.p.mu.Unlock()
+			lastErr = r.err
 		} else {
 			sentCount++
 		}
