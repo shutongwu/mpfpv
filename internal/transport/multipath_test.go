@@ -149,37 +149,18 @@ func TestMultiPathSender_SendRedundant(t *testing.T) {
 		t.Fatalf("new: %v", err)
 	}
 
-	// Manually add a path using loopback.
+	// Manually add paths using loopback via AddPathForTest.
 	loConn, err := net.ListenUDP("udp", &net.UDPAddr{IP: net.IPv4(127, 0, 0, 1), Port: 0})
 	if err != nil {
 		t.Fatalf("listen lo: %v", err)
 	}
-	p := &Path{
-		IfaceName: "test-lo",
-		LocalAddr: net.IPv4(127, 0, 0, 1),
-		Conn:      loConn,
-		Status:    PathActive,
-		LastRecv:  time.Now(),
-	}
-	m.mu.Lock()
-	m.paths["test-lo"] = p
-	m.mu.Unlock()
+	m.AddPathForTest("test-lo", net.IPv4(127, 0, 0, 1), loConn)
 
-	// Add a second path.
 	loConn2, err := net.ListenUDP("udp", &net.UDPAddr{IP: net.IPv4(127, 0, 0, 1), Port: 0})
 	if err != nil {
 		t.Fatalf("listen lo2: %v", err)
 	}
-	p2 := &Path{
-		IfaceName: "test-lo2",
-		LocalAddr: net.IPv4(127, 0, 0, 1),
-		Conn:      loConn2,
-		Status:    PathActive,
-		LastRecv:  time.Now(),
-	}
-	m.mu.Lock()
-	m.paths["test-lo2"] = p2
-	m.mu.Unlock()
+	m.AddPathForTest("test-lo2", net.IPv4(127, 0, 0, 1), loConn2)
 
 	payload := []byte("hello-redundant")
 	if err := m.Send(payload); err != nil {

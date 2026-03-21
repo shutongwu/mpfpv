@@ -62,6 +62,7 @@ type Path struct {
 	missCount  int // consecutive heartbeat misses
 	mu         sync.Mutex
 	closeCh    chan struct{} // closed when path is deliberately removed
+	sendCh     chan []byte   // per-path send channel; dedicated goroutine drains it
 }
 
 // RecvPacket is a packet received from the server on any path.
@@ -333,12 +334,10 @@ func (m *MultiPathSender) SetSendMode(mode uint8) {
 // --- internal methods ---
 
 func (m *MultiPathSender) sendRedundantLocked(data []byte) error {
-	// Serial send like engarde: iterate all paths and write directly.
-	// SO_BINDTODEVICE sockets return errors immediately when the NIC is
-	// unavailable ("network is unreachable"), so serial iteration does
-	// not block on dying NICs. Zero per-packet allocation (no goroutines,
-	// channels, or deadline syscalls).
-	var lastErr error
+	// Copy data into each path's sendCh. Each path has a dedicated send
+	// goroutine that drains the channel and calls WriteToUDP. A blocking
+	// write on one dying NIC only stalls that goroutine — other paths
+	// continue sending independently with zero delay.
 	sentCount := 0
 	for _, p := range m.paths {
 		p.mu.Lock()
@@ -347,22 +346,18 @@ func (m *MultiPathSender) sendRedundantLocked(data []byte) error {
 		if status == PathDown {
 			continue
 		}
-		if _, err := p.Conn.WriteToUDP(data, m.serverAddr); err != nil {
-			p.mu.Lock()
-			wasSuspect := p.Status == PathSuspect
-			p.Status = PathSuspect
-			p.mu.Unlock()
-			lastErr = err
-			// Log only on first failure (status transition), not every packet.
-			if !wasSuspect {
-				log.Warnf("multipath: send via %s failed: %v", p.IfaceName, err)
-			}
-		} else {
+		// Copy the packet for this path (buffer reuse safety).
+		pkt := make([]byte, len(data))
+		copy(pkt, data)
+		select {
+		case p.sendCh <- pkt:
 			sentCount++
+		default:
+			// Channel full — path is congested or stuck; skip silently.
 		}
 	}
-	if sentCount == 0 && lastErr != nil {
-		return lastErr
+	if sentCount == 0 {
+		return fmt.Errorf("transport: all paths congested or down")
 	}
 	return nil
 }
@@ -479,6 +474,7 @@ func (m *MultiPathSender) addPath(info *InterfaceInfo) {
 		Status:    PathActive,
 		LastRecv:  time.Now(),
 		closeCh:   make(chan struct{}),
+		sendCh:    make(chan []byte, 256),
 	}
 
 	m.mu.Lock()
@@ -490,9 +486,11 @@ func (m *MultiPathSender) addPath(info *InterfaceInfo) {
 		"addr":  localAddr.String(),
 	}).Info("path added")
 
-	// Start a receive goroutine for this path. Per-NIC receive is needed
-	// because NAT mappings point to the per-NIC socket port. The central
-	// recv socket is an additional backup, not a replacement.
+	// Start dedicated send goroutine for this path.
+	m.wg.Add(1)
+	go m.pathSendLoop(p)
+
+	// Start receive goroutine for this path (NAT compatibility).
 	m.wg.Add(1)
 	go m.perPathRecvLoop(p)
 }
@@ -521,6 +519,34 @@ func (m *MultiPathSender) removePath(name string) {
 	m.mu.Unlock()
 
 	log.WithField("iface", name).Info("path removed")
+}
+
+// pathSendLoop is a dedicated send goroutine for one path. It drains sendCh
+// and calls WriteToUDP. If the NIC dies and WriteToUDP blocks, only THIS
+// goroutine is affected — other paths' send goroutines keep running.
+func (m *MultiPathSender) pathSendLoop(p *Path) {
+	defer m.wg.Done()
+	for {
+		select {
+		case pkt, ok := <-p.sendCh:
+			if !ok {
+				return
+			}
+			if _, err := p.Conn.WriteToUDP(pkt, m.serverAddr); err != nil {
+				p.mu.Lock()
+				wasSuspect := p.Status == PathSuspect
+				p.Status = PathSuspect
+				p.mu.Unlock()
+				if !wasSuspect {
+					log.Warnf("multipath: send via %s failed: %v", p.IfaceName, err)
+				}
+			}
+		case <-p.closeCh:
+			return
+		case <-m.stopCh:
+			return
+		}
+	}
 }
 
 // perPathRecvLoop reads from a per-NIC socket. Needed because NAT mappings
@@ -593,10 +619,13 @@ func (m *MultiPathSender) AddPathForTest(name string, localAddr net.IP, conn *ne
 		Status:    PathActive,
 		LastRecv:  time.Now(),
 		closeCh:   make(chan struct{}),
+		sendCh:    make(chan []byte, 256),
 	}
 	m.mu.Lock()
 	m.paths[name] = p
 	m.mu.Unlock()
+	m.wg.Add(1)
+	go m.pathSendLoop(p)
 }
 
 // InjectRecvForTest pushes a packet into the receive channel for testing.
