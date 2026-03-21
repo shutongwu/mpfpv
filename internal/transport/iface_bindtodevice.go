@@ -32,6 +32,15 @@ func createBoundUDPConn(localAddr net.IP, ifaceName string) (*net.UDPConn, error
 		}
 	}
 
+	// Set a kernel-level send timeout so WriteToUDP does not block
+	// when the NIC is physically unplugged. Without this, serial
+	// redundant sends stall the healthy NIC for 2-3 seconds.
+	tv := syscall.Timeval{Sec: 0, Usec: 50000} // 50ms
+	if err := syscall.SetsockoptTimeval(s, syscall.SOL_SOCKET, syscall.SO_SNDTIMEO, &tv); err != nil {
+		syscall.Close(s)
+		return nil, fmt.Errorf("SO_SNDTIMEO (iface=%s): %w", ifaceName, err)
+	}
+
 	lsa := syscall.SockaddrInet4{Port: laddr.Port}
 	copy(lsa.Addr[:], laddr.IP.To4())
 

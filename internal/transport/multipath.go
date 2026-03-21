@@ -498,19 +498,29 @@ func (m *MultiPathSender) addPath(info *InterfaceInfo) {
 }
 
 // removePath closes and removes the path for the named interface.
+// Like engarde: close the socket FIRST to unblock any in-flight WriteToUDP
+// in sendRedundantLocked (which holds RLock), then acquire WLock to delete.
 func (m *MultiPathSender) removePath(name string) {
-	m.mu.Lock()
+	// Look up the path with a read lock (fast, doesn't block sends).
+	m.mu.RLock()
 	p, ok := m.paths[name]
-	if ok {
-		delete(m.paths, name)
+	m.mu.RUnlock()
+	if !ok {
+		return
 	}
+
+	// Close socket FIRST. This unblocks any WriteToUDP that is blocking
+	// on this dying NIC, causing it to return an error immediately.
+	// Safe to call concurrently with WriteToUDP in Go.
+	close(p.closeCh)
+	p.Conn.Close()
+
+	// Now acquire write lock and remove from map.
+	m.mu.Lock()
+	delete(m.paths, name)
 	m.mu.Unlock()
 
-	if ok {
-		close(p.closeCh) // signal recvLoop to exit
-		p.Conn.Close()
-		log.WithField("iface", name).Info("path removed")
-	}
+	log.WithField("iface", name).Info("path removed")
 }
 
 // perPathRecvLoop reads from a per-NIC socket. Needed because NAT mappings
