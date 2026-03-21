@@ -503,43 +503,42 @@ func (s *Server) sendToClient(clientID uint16, rawPacket []byte) {
 		return
 	}
 
-	// Build destination addresses. If the client advertised a ReplyPort
-	// (central recv socket), rewrite the port so packets arrive on the
-	// NIC-independent socket instead of the per-NIC send socket.
-	dstAddrs := make([]*net.UDPAddr, len(addrs))
-	for i, ai := range addrs {
-		if replyPort > 0 {
-			dstAddrs[i] = &net.UDPAddr{IP: ai.Addr.IP, Port: int(replyPort), Zone: ai.Addr.Zone}
-		} else {
-			dstAddrs[i] = ai.Addr
+	// sendTo is a helper that sends to the address and optionally also to
+	// the ReplyPort variant. The original port goes through NAT; the
+	// ReplyPort targets the NIC-independent central recv socket (local
+	// network or when NAT is not involved).
+	sendTo := func(dst *net.UDPAddr) {
+		if _, err := s.conn.WriteToUDP(rawPacket, dst); err != nil {
+			log.Warnf("server: write to %s for clientID=%d: %v", dst, clientID, err)
+		}
+		// Also send to ReplyPort if it differs from the original port.
+		if replyPort > 0 && int(replyPort) != dst.Port {
+			rpAddr := &net.UDPAddr{IP: dst.IP, Port: int(replyPort), Zone: dst.Zone}
+			s.conn.WriteToUDP(rawPacket, rpAddr) // best-effort, ignore error
 		}
 	}
 
 	switch sendMode {
 	case protocol.SendModeRedundant:
 		// Send to all known addresses.
-		for _, dst := range dstAddrs {
-			if _, err := s.conn.WriteToUDP(rawPacket, dst); err != nil {
-				log.Warnf("server: write to %s for clientID=%d: %v", dst, clientID, err)
-			}
+		for _, ai := range addrs {
+			sendTo(ai.Addr)
 		}
 	case protocol.SendModeFailover:
 		// Send to the most recently active address.
-		var bestIdx int
-		for i, ai := range addrs {
-			if i == 0 || ai.LastSeen.After(addrs[bestIdx].LastSeen) {
-				bestIdx = i
+		var best *AddrInfo
+		for _, ai := range addrs {
+			if best == nil || ai.LastSeen.After(best.LastSeen) {
+				best = ai
 			}
 		}
-		if _, err := s.conn.WriteToUDP(rawPacket, dstAddrs[bestIdx]); err != nil {
-			log.Warnf("server: write to %s for clientID=%d: %v", dstAddrs[bestIdx], clientID, err)
+		if best != nil {
+			sendTo(best.Addr)
 		}
 	default:
 		// Default to redundant.
-		for _, dst := range dstAddrs {
-			if _, err := s.conn.WriteToUDP(rawPacket, dst); err != nil {
-				log.Warnf("server: write to %s for clientID=%d: %v", dst, clientID, err)
-			}
+		for _, ai := range addrs {
+			sendTo(ai.Addr)
 		}
 	}
 }

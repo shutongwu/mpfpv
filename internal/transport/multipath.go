@@ -481,6 +481,12 @@ func (m *MultiPathSender) addPath(info *InterfaceInfo) {
 		"iface": info.Name,
 		"addr":  localAddr.String(),
 	}).Info("path added")
+
+	// Start a receive goroutine for this path. Per-NIC receive is needed
+	// because NAT mappings point to the per-NIC socket port. The central
+	// recv socket is an additional backup, not a replacement.
+	m.wg.Add(1)
+	go m.perPathRecvLoop(p)
 }
 
 // removePath closes and removes the path for the named interface.
@@ -496,6 +502,34 @@ func (m *MultiPathSender) removePath(name string) {
 		close(p.closeCh) // signal recvLoop to exit
 		p.Conn.Close()
 		log.WithField("iface", name).Info("path removed")
+	}
+}
+
+// perPathRecvLoop reads from a per-NIC socket. Needed because NAT mappings
+// point to the per-NIC port. Retries on transient errors instead of exiting.
+func (m *MultiPathSender) perPathRecvLoop(p *Path) {
+	defer m.wg.Done()
+	buf := make([]byte, recvBufSize)
+	for {
+		n, addr, err := p.Conn.ReadFromUDP(buf)
+		if err != nil {
+			select {
+			case <-m.stopCh:
+				return
+			case <-p.closeCh:
+				return
+			default:
+			}
+			time.Sleep(50 * time.Millisecond)
+			continue
+		}
+		data := make([]byte, n)
+		copy(data, buf[:n])
+		select {
+		case m.recvCh <- RecvPacket{Data: data, FromPath: p.IfaceName, Addr: addr}:
+		case <-m.stopCh:
+			return
+		}
 	}
 }
 
