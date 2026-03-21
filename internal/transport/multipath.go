@@ -61,6 +61,7 @@ type Path struct {
 	Status     PathStatus
 	missCount  int // consecutive heartbeat misses
 	mu         sync.Mutex
+	closeCh    chan struct{} // closed when path is deliberately removed
 }
 
 // RecvPacket is a packet received from the server on any path.
@@ -441,6 +442,7 @@ func (m *MultiPathSender) addPath(info *InterfaceInfo) {
 		Conn:      conn,
 		Status:    PathActive,
 		LastRecv:  time.Now(),
+		closeCh:   make(chan struct{}),
 	}
 
 	m.mu.Lock()
@@ -467,6 +469,7 @@ func (m *MultiPathSender) removePath(name string) {
 	m.mu.Unlock()
 
 	if ok {
+		close(p.closeCh) // signal recvLoop to exit
 		p.Conn.Close()
 		log.WithField("iface", name).Info("path removed")
 	}
@@ -480,15 +483,20 @@ func (m *MultiPathSender) recvLoop(p *Path) {
 	for {
 		n, addr, err := p.Conn.ReadFromUDP(buf)
 		if err != nil {
-			// Check if we are shutting down.
+			// Check if we are shutting down or path was deliberately removed.
 			select {
 			case <-m.stopCh:
 				return
+			case <-p.closeCh:
+				return
 			default:
 			}
-			// Socket was likely closed due to interface removal.
-			// The path has been or will be cleaned up.
-			return
+			// Transient error (e.g. kernel route table rebuild when another
+			// NIC is unplugged). Retry instead of exiting so the surviving
+			// path's receive goroutine stays alive.
+			log.Debugf("recvLoop %s: read error (retrying): %v", p.IfaceName, err)
+			time.Sleep(50 * time.Millisecond)
+			continue
 		}
 		data := make([]byte, n)
 		copy(data, buf[:n])
@@ -514,6 +522,7 @@ func (m *MultiPathSender) AddPathForTest(name string, localAddr net.IP, conn *ne
 		Conn:      conn,
 		Status:    PathActive,
 		LastRecv:  time.Now(),
+		closeCh:   make(chan struct{}),
 	}
 	m.mu.Lock()
 	m.paths[name] = p
