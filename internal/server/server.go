@@ -401,8 +401,10 @@ func (s *Server) handleData(hdr protocol.Header, payload []byte, from *net.UDPAd
 
 	// Dedup.
 	if s.dedup.IsDuplicate(clientID, hdr.Seq) {
+		log.Debugf("server: dedup dropped packet from clientID=%d seq=%d addr=%s", clientID, hdr.Seq, from)
 		return
 	}
+	log.Debugf("server: data packet from clientID=%d seq=%d len=%d addr=%s", clientID, hdr.Seq, len(rawPacket), from)
 
 	// Update addr LastSeen (but don't learn routes from Data).
 	s.sessionsLock.RLock()
@@ -416,6 +418,7 @@ func (s *Server) handleData(hdr protocol.Header, payload []byte, from *net.UDPAd
 	// Validate inner IP: must be IPv4, at least 20 bytes.
 	if len(payload) < 20 || payload[0]>>4 != 4 {
 		s.sessionsLock.RUnlock()
+		log.Debugf("server: invalid inner IP from clientID=%d len=%d ver=%d", clientID, len(payload), payload[0]>>4)
 		return
 	}
 
