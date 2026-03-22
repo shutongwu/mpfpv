@@ -96,6 +96,7 @@ type MultiPathSender struct {
 	watcher        *InterfaceWatcher
 	stopCh         chan struct{}
 	wg             sync.WaitGroup
+	OnPathChange   func() // called when paths are added; used to trigger immediate heartbeat
 }
 
 // NewMultiPathSender creates a new multi-path sender targeting serverAddr.
@@ -448,6 +449,10 @@ func (m *MultiPathSender) onInterfaceChange(added, removed []InterfaceInfo) {
 		m.mu.Lock()
 		m.activePath = m.selectBestPathLocked()
 		m.mu.Unlock()
+	}
+	// Trigger immediate heartbeat so server learns new addresses fast.
+	if len(added) > 0 && m.OnPathChange != nil {
+		m.OnPathChange()
 	}
 }
 
