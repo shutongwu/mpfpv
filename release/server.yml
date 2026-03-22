@@ -1,0 +1,13 @@
+mode: server
+teamKey: "your-team-key"
+
+server:
+  listenAddr: "0.0.0.0:9800"
+  virtualIP: "10.99.0.254/24"
+  subnet: "10.99.0.0/24"
+  clientTimeout: 15
+  addrTimeout: 5
+  dedupWindow: 4096
+  mtu: 1400
+  ipPoolFile: "/opt/mpfpv/ip_pool.json"
+  webUI: "0.0.0.0:9801"
