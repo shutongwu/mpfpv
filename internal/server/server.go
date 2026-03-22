@@ -26,14 +26,16 @@ type AddrInfo struct {
 
 // ClientSession tracks a connected client.
 type ClientSession struct {
-	ClientID   uint16
-	VirtualIP  net.IP
-	PrefixLen  uint8
-	SendMode   uint8              // protocol.SendModeRedundant or SendModeFailover
-	ReplyPort  uint16             // central recv port; 0 = use source port (legacy)
-	DeviceName string             // device name reported by client
-	Addrs      map[string]*AddrInfo // srcAddr string -> info
-	LastSeen   time.Time
+	ClientID     uint16
+	VirtualIP    net.IP
+	PrefixLen    uint8
+	SendMode     uint8              // protocol.SendModeRedundant or SendModeFailover
+	ReplyPort    uint16             // central recv port; 0 = use source port (legacy)
+	DeviceName   string             // device name reported by client
+	Addrs        map[string]*AddrInfo // srcAddr string -> info
+	LastSeen     time.Time
+	LastDataAddr *net.UDPAddr      // last address that sent a data packet (for failover reply)
+	PathRTTs     []protocol.PathRTT // per-NIC RTT reported by client
 }
 
 // Server is the mpfpv relay server.
@@ -352,6 +354,7 @@ func (s *Server) handleHeartbeat(hdr protocol.Header, payload []byte, from *net.
 			SendMode:   hb.SendMode,
 			ReplyPort:  hb.ReplyPort,
 			DeviceName: hb.DeviceName,
+			PathRTTs:   hb.PathRTTs,
 			Addrs:      make(map[string]*AddrInfo),
 			LastSeen:   now,
 		}
@@ -375,6 +378,9 @@ func (s *Server) handleHeartbeat(hdr protocol.Header, payload []byte, from *net.
 		session.LastSeen = now
 		if hb.DeviceName != "" {
 			session.DeviceName = hb.DeviceName
+		}
+		if len(hb.PathRTTs) > 0 {
+			session.PathRTTs = hb.PathRTTs
 		}
 
 		// If client reconnects with 0.0.0.0, use the previously assigned IP.
@@ -447,6 +453,7 @@ func (s *Server) handleData(hdr protocol.Header, payload []byte, from *net.UDPAd
 		ai.LastSeen = time.Now()
 	}
 	session.LastSeen = time.Now()
+	session.LastDataAddr = from
 	s.sessionsLock.RUnlock()
 
 	// Read destination IP from inner IP header.
@@ -493,6 +500,7 @@ func (s *Server) sendToClient(clientID uint16, rawPacket []byte) {
 
 	sendMode := session.SendMode
 	replyPort := session.ReplyPort
+	lastData := session.LastDataAddr
 	addrs := make([]*AddrInfo, 0, len(session.Addrs))
 	for _, ai := range session.Addrs {
 		addrs = append(addrs, ai)
@@ -525,15 +533,12 @@ func (s *Server) sendToClient(clientID uint16, rawPacket []byte) {
 			sendTo(ai.Addr)
 		}
 	case protocol.SendModeFailover:
-		// Send to the most recently active address.
-		var best *AddrInfo
-		for _, ai := range addrs {
-			if best == nil || ai.LastSeen.After(best.LastSeen) {
-				best = ai
-			}
-		}
-		if best != nil {
-			sendTo(best.Addr)
+		// Send to the address that last sent a data packet.
+		// This tracks the client's actual active path, not heartbeat activity.
+		if lastData != nil {
+			sendTo(lastData)
+		} else if len(addrs) > 0 {
+			sendTo(addrs[0].Addr)
 		}
 	default:
 		// Default to redundant.
@@ -559,6 +564,7 @@ func (s *Server) sendHeartbeatAck(to *net.UDPAddr, assignedIP net.IP, prefixLen 
 		AssignedIP: assignedIP,
 		PrefixLen:  prefixLen,
 		Status:     status,
+		MTU:        uint16(s.cfg.Server.MTU),
 	})
 
 	if s.conn != nil {

@@ -551,19 +551,31 @@ func TestSendToClient_Failover(t *testing.T) {
 	addr1 := recv1.LocalAddr().(*net.UDPAddr)
 	addr2 := recv2.LocalAddr().(*net.UDPAddr)
 
-	// Register with failover mode. addr1 first, then addr2 (addr2 is more recent).
+	// Register with failover mode via both addresses.
 	s.handlePacket(buildHeartbeat(1, net.ParseIP("10.99.0.1"), 24, protocol.SendModeFailover, "testkey"), addr1)
-	time.Sleep(10 * time.Millisecond) // ensure addr2 has later timestamp
 	s.handlePacket(buildHeartbeat(1, net.ParseIP("10.99.0.1"), 24, protocol.SendModeFailover, "testkey"), addr2)
 
 	// Drain HeartbeatAcks.
 	drainHeartbeatAcks(t, recv1)
 	drainHeartbeatAcks(t, recv2)
 
+	// Simulate a data packet from addr2 so server learns the active path.
+	dataFromClient := make([]byte, protocol.HeaderSize+28)
+	protocol.EncodeHeader(dataFromClient, &protocol.Header{
+		Version: protocol.Version1, Type: protocol.TypeData, ClientID: 1, Seq: 100,
+	})
+	// Minimal IPv4 header: version=4, IHL=5, total=28, src=10.99.0.1, dst=10.99.0.254
+	ip := dataFromClient[protocol.HeaderSize:]
+	ip[0] = 0x45
+	ip[2], ip[3] = 0, 28
+	copy(ip[12:16], net.ParseIP("10.99.0.1").To4())
+	copy(ip[16:20], net.ParseIP("10.99.0.254").To4())
+	s.handlePacket(dataFromClient, addr2)
+
 	testData := []byte("failovertest")
 	s.sendToClient(1, testData)
 
-	// Only recv2 (the most recent) should receive.
+	// Only recv2 (the active data path) should receive.
 	buf := make([]byte, 100)
 
 	_ = recv2.SetReadDeadline(time.Now().Add(1 * time.Second))
