@@ -2,3 +2,6 @@
 *.exe
 ip_pool.json
 build/
+
+# Release build artifacts
+release/packages/

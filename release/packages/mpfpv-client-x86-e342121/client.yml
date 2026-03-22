@@ -1,9 +1,0 @@
-mode: client
-teamKey: "your-team-key"
-
-client:
-  serverAddr: "your-server:9800"
-  sendMode: redundant
-  mtu: 1400
-  dedupWindow: 4096
-  webUI: "0.0.0.0:9801"
