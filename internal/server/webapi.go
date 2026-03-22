@@ -193,6 +193,8 @@ func (s *Server) GetDevices() []web.DeviceInfo {
 					RTTms: int(pr.RTTms),
 				})
 			}
+			d.RxBytes = sess.RxBytes
+			d.TxBytes = sess.TxBytes
 		}
 		devices = append(devices, d)
 	}

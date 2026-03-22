@@ -81,6 +81,8 @@ type DeviceInfo struct {
 	LastSeen   string          `json:"lastSeen,omitempty"`
 	AddrCount  int             `json:"addrCount"`
 	PathRTTs   []DevicePathRTT `json:"pathRTTs,omitempty"`
+	RxBytes    uint64          `json:"rxBytes"`
+	TxBytes    uint64          `json:"txBytes"`
 }
 
 // DeviceUpdateRequest is the payload for PUT /api/devices/{id}.

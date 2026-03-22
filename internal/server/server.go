@@ -22,6 +22,8 @@ import (
 type AddrInfo struct {
 	Addr     *net.UDPAddr
 	LastSeen time.Time
+	RxBytes  uint64 // bytes received from this address
+	TxBytes  uint64 // bytes sent to this address
 }
 
 // ClientSession tracks a connected client.
@@ -36,6 +38,8 @@ type ClientSession struct {
 	LastSeen     time.Time
 	LastDataAddr *net.UDPAddr      // last address that sent a data packet (for failover reply)
 	PathRTTs     []protocol.PathRTT // per-NIC RTT reported by client
+	RxBytes      uint64             // total bytes received from client
+	TxBytes      uint64             // total bytes sent to client
 }
 
 // Server is the mpfpv relay server.
@@ -447,13 +451,16 @@ func (s *Server) handleData(hdr protocol.Header, payload []byte, from *net.UDPAd
 		return
 	}
 
-	// Update source address last seen time.
+	// Update source address last seen time and byte counters.
+	pktLen := uint64(len(rawPacket))
 	addrKey := from.String()
 	if ai, ok := session.Addrs[addrKey]; ok {
 		ai.LastSeen = time.Now()
+		ai.RxBytes += pktLen
 	}
 	session.LastSeen = time.Now()
 	session.LastDataAddr = from
+	session.RxBytes += pktLen
 	s.sessionsLock.RUnlock()
 
 	// Read destination IP from inner IP header.
@@ -511,6 +518,8 @@ func (s *Server) sendToClient(clientID uint16, rawPacket []byte) {
 		return
 	}
 
+	pktLen := uint64(len(rawPacket))
+
 	// sendTo is a helper that sends to the address and optionally also to
 	// the ReplyPort variant. The original port goes through NAT; the
 	// ReplyPort targets the NIC-independent central recv socket (local
@@ -518,7 +527,9 @@ func (s *Server) sendToClient(clientID uint16, rawPacket []byte) {
 	sendTo := func(dst *net.UDPAddr) {
 		if _, err := s.conn.WriteToUDP(rawPacket, dst); err != nil {
 			log.Warnf("server: write to %s for clientID=%d: %v", dst, clientID, err)
+			return
 		}
+		session.TxBytes += pktLen
 		// Also send to ReplyPort if it differs from the original port.
 		if replyPort > 0 && int(replyPort) != dst.Port {
 			rpAddr := &net.UDPAddr{IP: dst.IP, Port: int(replyPort), Zone: dst.Zone}

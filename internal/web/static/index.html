@@ -147,6 +147,8 @@ button.danger:hover { background: #4a1525; border-color: #f85149; }
   var serverConfigOpen = false;
   var serverInitialized = false;
   var serverHasConfigAPI = false;
+  var prevDeviceBytes = {}; // clientID -> {rx, tx, time}
+
 
   function detectMode() {
     // First, check if GUI controller is available.
@@ -509,7 +511,7 @@ button.danger:hover { background: #4a1525; border-color: #f85149; }
       html += '<span class="loading">No registered devices</span>';
     } else {
       html += '<table><thead><tr>';
-      html += '<th>Device Name</th><th>Virtual IP</th><th>Status</th><th>Send Mode</th><th>RTT</th><th>Links</th><th>Last Seen</th><th></th>';
+      html += '<th>Device Name</th><th>Virtual IP</th><th>Status</th><th>Send Mode</th><th>RTT</th><th>Bandwidth</th><th>Links</th><th>Last Seen</th><th></th>';
       html += '</tr></thead><tbody>';
       for (var i = 0; i < devices.length; i++) {
         var d = devices[i];
@@ -530,13 +532,30 @@ button.danger:hover { background: #4a1525; border-color: #f85149; }
           }).join('');
         }
         html += '<td>' + rttHtml + '</td>';
+        // Bandwidth rate calculation from cumulative byte counters.
+        var bwHtml = '-';
+        if (d.online && (d.rxBytes > 0 || d.txBytes > 0)) {
+          var now = Date.now();
+          var prev = prevDeviceBytes[d.clientID];
+          if (prev) {
+            var dt = (now - prev.time) / 1000; // seconds
+            if (dt > 0.5) {
+              var rxRate = (d.rxBytes - prev.rx) * 8 / dt;
+              var txRate = (d.txBytes - prev.tx) * 8 / dt;
+              bwHtml = '<span style="color:#3fb950">&uarr;' + formatBits(rxRate) + '</span> '
+                     + '<span style="color:#58a6ff">&darr;' + formatBits(txRate) + '</span>';
+            }
+          }
+          prevDeviceBytes[d.clientID] = {rx: d.rxBytes, tx: d.txBytes, time: now};
+        }
+        html += '<td>' + bwHtml + '</td>';
         html += '<td>' + d.addrCount + '</td>';
         html += '<td>' + formatTime(d.lastSeen) + '</td>';
         html += '<td><button onclick="event.stopPropagation(); mpfpv.saveDeviceIP(' + d.clientID + ', \'' + inputId + '\')">Save</button> ';
         html += '<button class="danger" onclick="event.stopPropagation(); mpfpv.deleteDevice(' + d.clientID + ', \'' + esc(d.deviceName || '') + '\')">Remove</button></td>';
         html += '</tr>';
         if (isExpanded && d.online) {
-          html += '<tr class="detail-row"><td colspan="8" id="detail-' + d.clientID + '"><span class="loading">Loading...</span></td></tr>';
+          html += '<tr class="detail-row"><td colspan="9" id="detail-' + d.clientID + '"><span class="loading">Loading...</span></td></tr>';
         }
       }
       html += '</tbody></table>';
@@ -749,6 +768,12 @@ button.danger:hover { background: #4a1525; border-color: #f85149; }
     var d = document.createElement('div');
     d.textContent = String(s);
     return d.innerHTML;
+  }
+
+  function formatBits(bps) {
+    if (bps < 1000) return Math.round(bps) + ' bps';
+    if (bps < 1000000) return (bps / 1000).toFixed(1) + ' kbps';
+    return (bps / 1000000).toFixed(2) + ' Mbps';
   }
 
   function formatTime(iso) {
