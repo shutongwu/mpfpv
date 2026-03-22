@@ -152,6 +152,159 @@ func (s *Server) DeleteClient(id uint16) error {
 	return nil
 }
 
+// GetDevices returns all registered devices (from IP pool), merged with
+// live session data for online status.
+func (s *Server) GetDevices() []web.DeviceInfo {
+	// Snapshot IP pool data.
+	s.ipPoolLock.Lock()
+	poolSnapshot := make(map[uint16]net.IP, len(s.ipPool))
+	nameSnapshot := make(map[uint16]string, len(s.ipPoolNames))
+	for k, v := range s.ipPool {
+		poolSnapshot[k] = v
+	}
+	for k, v := range s.ipPoolNames {
+		nameSnapshot[k] = v
+	}
+	s.ipPoolLock.Unlock()
+
+	// Merge with live session data.
+	s.sessionsLock.RLock()
+	defer s.sessionsLock.RUnlock()
+
+	now := time.Now()
+	devices := make([]web.DeviceInfo, 0, len(poolSnapshot))
+	for clientID, ip := range poolSnapshot {
+		d := web.DeviceInfo{
+			ClientID:   clientID,
+			VirtualIP:  ip.String(),
+			DeviceName: nameSnapshot[clientID],
+		}
+		if sess, ok := s.sessions[clientID]; ok {
+			d.Online = now.Sub(sess.LastSeen) < s.clientTimeout
+			d.SendMode = sendModeString(sess.SendMode)
+			d.LastSeen = sess.LastSeen.Format(time.RFC3339)
+			d.AddrCount = len(sess.Addrs)
+			if sess.DeviceName != "" {
+				d.DeviceName = sess.DeviceName
+			}
+			for _, pr := range sess.PathRTTs {
+				d.PathRTTs = append(d.PathRTTs, web.DevicePathRTT{
+					Name:  pr.Name,
+					RTTms: int(pr.RTTms),
+				})
+			}
+		}
+		devices = append(devices, d)
+	}
+	sort.Slice(devices, func(i, j int) bool {
+		return devices[i].ClientID < devices[j].ClientID
+	})
+	return devices
+}
+
+// UpdateDeviceIP changes the virtual IP assigned to a device.
+// If the device is online, it updates the session, route table, and notifies the client.
+func (s *Server) UpdateDeviceIP(clientID uint16, newIPStr string) error {
+	newIP := net.ParseIP(newIPStr).To4()
+	if newIP == nil {
+		return fmt.Errorf("invalid IPv4 address: %s", newIPStr)
+	}
+
+	// Check subnet membership.
+	if s.subnet != nil && !s.subnet.Contains(newIP) {
+		return fmt.Errorf("IP %s is not within subnet %s", newIP, s.subnet)
+	}
+
+	// Check not server's own IP.
+	var newKey [4]byte
+	copy(newKey[:], newIP)
+	if newKey == s.serverVirtualIP {
+		return fmt.Errorf("cannot assign server's own IP")
+	}
+
+	// Phase 1: Update IP pool.
+	s.ipPoolLock.Lock()
+	oldIP, exists := s.ipPool[clientID]
+	if !exists {
+		s.ipPoolLock.Unlock()
+		return fmt.Errorf("device %d not found", clientID)
+	}
+	// Check uniqueness.
+	for cid, ip := range s.ipPool {
+		if cid != clientID && ip.Equal(newIP) {
+			s.ipPoolLock.Unlock()
+			return fmt.Errorf("IP %s is already assigned to client %d", newIP, cid)
+		}
+	}
+	s.ipPool[clientID] = newIP
+	s.saveIPPool()
+	s.ipPoolLock.Unlock()
+
+	// Phase 2: Update route table.
+	var oldKey [4]byte
+	if oldIP4 := oldIP.To4(); oldIP4 != nil {
+		copy(oldKey[:], oldIP4)
+	}
+	s.routeLock.Lock()
+	delete(s.routeTable, oldKey)
+	s.routeTable[newKey] = clientID
+	s.routeLock.Unlock()
+
+	// Phase 3: Update live session and collect addresses for notification.
+	var addrsToNotify []*net.UDPAddr
+	s.sessionsLock.Lock()
+	if sess, ok := s.sessions[clientID]; ok {
+		sess.VirtualIP = newIP
+		sess.PrefixLen = s.prefixLen
+		for _, ai := range sess.Addrs {
+			addrsToNotify = append(addrsToNotify, ai.Addr)
+		}
+	}
+	s.sessionsLock.Unlock()
+
+	// Phase 4: Notify online client via HeartbeatAck.
+	for _, addr := range addrsToNotify {
+		s.sendHeartbeatAck(addr, newIP, s.prefixLen, protocol.AckStatusOK)
+	}
+
+	return nil
+}
+
+// DeleteDevice removes a device from the IP pool, its session, and route table.
+// Next time the device connects, it will be auto-assigned a new IP.
+func (s *Server) DeleteDevice(clientID uint16) error {
+	// Phase 1: Remove from IP pool.
+	s.ipPoolLock.Lock()
+	oldIP, exists := s.ipPool[clientID]
+	if !exists {
+		s.ipPoolLock.Unlock()
+		return fmt.Errorf("device %d not found", clientID)
+	}
+	delete(s.ipPool, clientID)
+	delete(s.ipPoolNames, clientID)
+	s.saveIPPool()
+	s.ipPoolLock.Unlock()
+
+	// Phase 2: Remove route table entry.
+	if oldIP4 := oldIP.To4(); oldIP4 != nil {
+		var key [4]byte
+		copy(key[:], oldIP4)
+		s.routeLock.Lock()
+		delete(s.routeTable, key)
+		s.routeLock.Unlock()
+	}
+
+	// Phase 3: Remove live session if exists.
+	s.sessionsLock.Lock()
+	if _, ok := s.sessions[clientID]; ok {
+		delete(s.sessions, clientID)
+		s.dedup.Reset(clientID)
+	}
+	s.sessionsLock.Unlock()
+
+	return nil
+}
+
 // GetRoutes returns the current route table as a slice of RouteEntry.
 func (s *Server) GetRoutes() []web.RouteEntry {
 	s.routeLock.RLock()

@@ -436,11 +436,9 @@ button.danger:hover { background: #4a1525; border-color: #f85149; }
       }).catch(function() {});
     }
 
-    Promise.all([
-      fetch('/api/clients').then(function(r) { return r.json(); }),
-      fetch('/api/routes').then(function(r) { return r.json(); })
-    ]).then(function(results) {
-      renderServer(results[0], results[1]);
+    fetch('/api/devices').then(function(r) { return r.json(); })
+    .then(function(devices) {
+      renderServer(devices);
     }).catch(function(e) {
       document.getElementById('app').innerHTML = '<p class="error-msg">Failed to fetch data: ' + esc(e.message) + '</p>';
     });
@@ -476,7 +474,7 @@ button.danger:hover { background: #4a1525; border-color: #f85149; }
     }
   }
 
-  function renderServer(clients, routes) {
+  function renderServer(devices) {
     // First render: build stable DOM layout
     if (!serverInitialized) {
       var layoutHtml = '';
@@ -503,46 +501,43 @@ button.danger:hover { background: #4a1525; border-color: #f85149; }
       }
     }
 
-    // Update only the data area (clients + routes), leaving config form untouched
-    var html = '<h2>Clients</h2><div class="card">';
-    if (!clients || clients.length === 0) {
-      html += '<span class="loading">No clients connected</span>';
+    var html = '';
+
+    // Devices section — unified view of all registered devices
+    html += '<h2>Devices</h2><div class="card">';
+    if (!devices || devices.length === 0) {
+      html += '<span class="loading">No registered devices</span>';
     } else {
       html += '<table><thead><tr>';
-      html += '<th>Client ID</th><th>Device Name</th><th>Virtual IP</th><th>Send Mode</th><th>Status</th><th>Addrs</th><th>Last Seen</th><th></th>';
+      html += '<th>Device Name</th><th>Virtual IP</th><th>Status</th><th>Send Mode</th><th>RTT</th><th>Links</th><th>Last Seen</th><th></th>';
       html += '</tr></thead><tbody>';
-      for (var i = 0; i < clients.length; i++) {
-        var c = clients[i];
-        var statusBadge = c.online
+      for (var i = 0; i < devices.length; i++) {
+        var d = devices[i];
+        var statusBadge = d.online
           ? '<span class="badge badge-green">online</span>'
-          : '<span class="badge badge-red">offline</span>';
-        var isExpanded = expandedClient === c.clientID;
-        html += '<tr class="' + (isExpanded ? 'expanded' : '') + '" style="cursor:pointer" onclick="mpfpv.toggleClient(' + c.clientID + ')">';
-        html += '<td>' + c.clientID + '</td>';
-        html += '<td>' + esc(c.deviceName || '-') + '</td>';
-        html += '<td>' + esc(c.virtualIP) + '</td>';
-        html += '<td><span class="badge badge-blue">' + esc(c.sendMode) + '</span></td>';
+          : '<span class="badge badge-gray">offline</span>';
+        var inputId = 'dev-ip-' + d.clientID;
+        var isExpanded = expandedClient === d.clientID;
+        html += '<tr class="' + (isExpanded ? 'expanded' : '') + '" style="cursor:pointer" onclick="mpfpv.toggleClient(' + d.clientID + ')">';
+        html += '<td>' + esc(d.deviceName || 'ID:' + d.clientID) + '</td>';
+        html += '<td><input type="text" id="' + inputId + '" value="' + esc(d.virtualIP) + '" style="width:120px;padding:2px 6px;background:#0d1117;color:#e6edf3;border:1px solid #30363d;border-radius:3px;font-size:13px;" onclick="event.stopPropagation()"></td>';
         html += '<td>' + statusBadge + '</td>';
-        html += '<td>' + c.addrCount + '</td>';
-        html += '<td>' + formatTime(c.lastSeen) + '</td>';
-        html += '<td><button class="danger" onclick="event.stopPropagation(); mpfpv.deleteClient(' + c.clientID + ')">Delete</button></td>';
-        html += '</tr>';
-        if (isExpanded) {
-          html += '<tr class="detail-row"><td colspan="8" id="detail-' + c.clientID + '"><span class="loading">Loading...</span></td></tr>';
+        html += '<td>' + (d.sendMode ? '<span class="badge badge-blue">' + esc(d.sendMode) + '</span>' : '-') + '</td>';
+        var rttHtml = '-';
+        if (d.pathRTTs && d.pathRTTs.length > 0) {
+          rttHtml = d.pathRTTs.map(function(p) {
+            return '<span class="badge badge-blue" style="margin-right:4px">' + esc(p.name) + ' ' + p.rttMs + 'ms</span>';
+          }).join('');
         }
-      }
-      html += '</tbody></table>';
-    }
-    html += '</div>';
-
-    html += '<h2>Route Table</h2><div class="card">';
-    if (!routes || routes.length === 0) {
-      html += '<span class="loading">No routes</span>';
-    } else {
-      html += '<table><thead><tr><th>Virtual IP</th><th>Client ID</th></tr></thead><tbody>';
-      for (var j = 0; j < routes.length; j++) {
-        var r = routes[j];
-        html += '<tr><td>' + esc(r.virtualIP) + '</td><td>' + r.clientID + '</td></tr>';
+        html += '<td>' + rttHtml + '</td>';
+        html += '<td>' + d.addrCount + '</td>';
+        html += '<td>' + formatTime(d.lastSeen) + '</td>';
+        html += '<td><button onclick="event.stopPropagation(); mpfpv.saveDeviceIP(' + d.clientID + ', \'' + inputId + '\')">Save</button> ';
+        html += '<button class="danger" onclick="event.stopPropagation(); mpfpv.deleteDevice(' + d.clientID + ', \'' + esc(d.deviceName || '') + '\')">Remove</button></td>';
+        html += '</tr>';
+        if (isExpanded && d.online) {
+          html += '<tr class="detail-row"><td colspan="8" id="detail-' + d.clientID + '"><span class="loading">Loading...</span></td></tr>';
+        }
       }
       html += '</tbody></table>';
     }
@@ -606,6 +601,35 @@ button.danger:hover { background: #4a1525; border-color: #f85149; }
       fetch('/api/clients/' + id, { method: 'DELETE' })
         .then(function() { if (expandedClient === id) expandedClient = null; doRefresh(); })
         .catch(function(e) { alert('Failed: ' + e.message); });
+    },
+    deleteDevice: function(clientID, name) {
+      var label = name ? name + ' (' + clientID + ')' : 'ID:' + clientID;
+      if (!confirm('Remove device ' + label + '?\nIt will get a new IP on next connection.')) return;
+      fetch('/api/devices/' + clientID, { method: 'DELETE' })
+        .then(function(res) {
+          if (!res.ok) return res.text().then(function(t) { throw new Error(t); });
+          doRefresh();
+        })
+        .catch(function(e) { alert('Failed: ' + e.message); });
+    },
+    saveDeviceIP: function(clientID, inputId) {
+      var input = document.getElementById(inputId);
+      if (!input) return;
+      var newIP = input.value.trim();
+      if (!newIP) { alert('IP cannot be empty'); return; }
+      fetch('/api/devices/' + clientID, {
+        method: 'PUT',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ virtualIP: newIP })
+      }).then(function(res) {
+        if (!res.ok) return res.text().then(function(t) { throw new Error(t); });
+        input.style.borderColor = '#3fb950';
+        setTimeout(function() { input.style.borderColor = '#30363d'; }, 2000);
+        doRefresh();
+      }).catch(function(e) {
+        input.style.borderColor = '#f85149';
+        alert('Failed: ' + e.message);
+      });
     },
 
     // --- GUI-specific actions ---

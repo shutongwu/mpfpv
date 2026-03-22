@@ -64,6 +64,30 @@ type RouteEntry struct {
 	ClientID  uint16 `json:"clientID"`
 }
 
+// DevicePathRTT is a NIC name + RTT pair for the API.
+type DevicePathRTT struct {
+	Name  string `json:"name"`
+	RTTms int    `json:"rttMs"`
+}
+
+// DeviceInfo represents a registered device from the IP pool,
+// merged with live session data if available.
+type DeviceInfo struct {
+	ClientID   uint16          `json:"clientID"`
+	VirtualIP  string          `json:"virtualIP"`
+	DeviceName string          `json:"deviceName,omitempty"`
+	Online     bool            `json:"online"`
+	SendMode   string          `json:"sendMode,omitempty"`
+	LastSeen   string          `json:"lastSeen,omitempty"`
+	AddrCount  int             `json:"addrCount"`
+	PathRTTs   []DevicePathRTT `json:"pathRTTs,omitempty"`
+}
+
+// DeviceUpdateRequest is the payload for PUT /api/devices/{id}.
+type DeviceUpdateRequest struct {
+	VirtualIP string `json:"virtualIP"`
+}
+
 // ServerConfigInfo holds the server's editable configuration.
 type ServerConfigInfo struct {
 	TeamKey    string `json:"teamKey"`
@@ -84,6 +108,13 @@ type ServerAPI interface {
 type ServerConfigAPI interface {
 	GetServerConfig() ServerConfigInfo
 	UpdateServerConfig(teamKey, listenAddr string) error
+}
+
+// DeviceAPI exposes device management (IP pool + sessions merge) to the Web UI.
+type DeviceAPI interface {
+	GetDevices() []DeviceInfo
+	UpdateDeviceIP(clientID uint16, newIP string) error
+	DeleteDevice(clientID uint16) error
 }
 
 // ClientAPI exposes client state to the Web UI.
@@ -129,12 +160,16 @@ func NewHandler(mode string, api interface{}, opts ...interface{}) http.Handler 
 	// Check for optional controllers.
 	var guiCtrl GUIController
 	var srvCfgAPI ServerConfigAPI
+	var devAPI DeviceAPI
 	for _, o := range opts {
 		if gc, ok := o.(GUIController); ok {
 			guiCtrl = gc
 		}
 		if sc, ok := o.(ServerConfigAPI); ok {
 			srvCfgAPI = sc
+		}
+		if da, ok := o.(DeviceAPI); ok {
+			devAPI = da
 		}
 	}
 
@@ -211,6 +246,50 @@ func NewHandler(mode string, api interface{}, opts ...interface{}) http.Handler 
 						return
 					}
 					writeJSON(w, map[string]string{"status": "saved"})
+				default:
+					http.Error(w, "method not allowed", http.StatusMethodNotAllowed)
+				}
+			})
+		}
+
+		// Register device management endpoints if DeviceAPI is provided.
+		if devAPI != nil {
+			mux.HandleFunc("/api/devices", func(w http.ResponseWriter, r *http.Request) {
+				if r.Method != http.MethodGet {
+					http.Error(w, "method not allowed", http.StatusMethodNotAllowed)
+					return
+				}
+				writeJSON(w, devAPI.GetDevices())
+			})
+
+			mux.HandleFunc("/api/devices/", func(w http.ResponseWriter, r *http.Request) {
+				idStr := strings.TrimPrefix(r.URL.Path, "/api/devices/")
+				idStr = strings.TrimSuffix(idStr, "/")
+				id, err := strconv.ParseUint(idStr, 10, 16)
+				if err != nil {
+					http.Error(w, "invalid client ID", http.StatusBadRequest)
+					return
+				}
+				clientID := uint16(id)
+
+				switch r.Method {
+				case http.MethodPut:
+					var req DeviceUpdateRequest
+					if err := json.NewDecoder(r.Body).Decode(&req); err != nil {
+						http.Error(w, "invalid JSON: "+err.Error(), http.StatusBadRequest)
+						return
+					}
+					if err := devAPI.UpdateDeviceIP(clientID, req.VirtualIP); err != nil {
+						http.Error(w, err.Error(), http.StatusBadRequest)
+						return
+					}
+					writeJSON(w, map[string]string{"status": "updated"})
+				case http.MethodDelete:
+					if err := devAPI.DeleteDevice(clientID); err != nil {
+						http.Error(w, err.Error(), http.StatusNotFound)
+						return
+					}
+					writeJSON(w, map[string]string{"status": "deleted"})
 				default:
 					http.Error(w, "method not allowed", http.StatusMethodNotAllowed)
 				}
