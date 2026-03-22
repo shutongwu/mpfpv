@@ -61,6 +61,7 @@ type Path struct {
 	Status     PathStatus
 	missCount  int // consecutive heartbeat misses
 	TxBytes    uint64 // bytes sent through this path
+	RxBytes    uint64 // bytes received on this path
 	mu         sync.Mutex
 	closed     chan struct{} // closed when path is deliberately removed; used by perPathRecvLoop
 }
@@ -81,6 +82,7 @@ type PathInfo struct {
 	Status    string
 	IsActive  bool // true if this is the active path in failover mode
 	TxBytes   uint64
+	RxBytes   uint64
 }
 
 // MultiPathSender manages sending data over multiple network interfaces.
@@ -230,6 +232,64 @@ func (m *MultiPathSender) SendAll(data []byte) error {
 	return lastErr
 }
 
+// SendAllHeartbeat sends a heartbeat through all paths, appending per-path
+// data (NIC name, RTT, TxBytes, RxBytes) to each copy. Also counts TxBytes.
+func (m *MultiPathSender) SendAllHeartbeat(baseBuf []byte) error {
+	m.mu.RLock()
+	defer m.mu.RUnlock()
+
+	var lastErr error
+	for _, p := range m.paths {
+		p.mu.Lock()
+		status := p.Status
+		rttMs := uint16(p.RTT.Milliseconds())
+		txBytes := uint32(p.TxBytes)
+		rxBytes := uint32(p.RxBytes)
+		p.mu.Unlock()
+		if status == PathDown {
+			continue
+		}
+
+		// Append per-path data: \x00 [name_len] [name] [rtt 2B] [tx 4B] [rx 4B]
+		nameBytes := []byte(p.IfaceName)
+		suffix := make([]byte, 1+1+len(nameBytes)+2+4+4)
+		i := 0
+		suffix[i] = 0x00 // separator
+		i++
+		suffix[i] = byte(len(nameBytes))
+		i++
+		i += copy(suffix[i:], nameBytes)
+		suffix[i] = byte(rttMs >> 8)
+		suffix[i+1] = byte(rttMs)
+		i += 2
+		suffix[i] = byte(txBytes >> 24)
+		suffix[i+1] = byte(txBytes >> 16)
+		suffix[i+2] = byte(txBytes >> 8)
+		suffix[i+3] = byte(txBytes)
+		i += 4
+		suffix[i] = byte(rxBytes >> 24)
+		suffix[i+1] = byte(rxBytes >> 16)
+		suffix[i+2] = byte(rxBytes >> 8)
+		suffix[i+3] = byte(rxBytes)
+
+		pkt := make([]byte, len(baseBuf)+len(suffix))
+		copy(pkt, baseBuf)
+		copy(pkt[len(baseBuf):], suffix)
+
+		if _, err := p.Conn.WriteToUDP(pkt, m.serverAddr); err != nil {
+			p.mu.Lock()
+			p.Status = PathSuspect
+			p.mu.Unlock()
+			lastErr = err
+		} else {
+			p.mu.Lock()
+			p.TxBytes += uint64(len(pkt))
+			p.mu.Unlock()
+		}
+	}
+	return lastErr
+}
+
 // RecvChan returns the channel on which received packets are delivered.
 func (m *MultiPathSender) RecvChan() <-chan RecvPacket {
 	return m.recvCh
@@ -306,6 +366,7 @@ func (m *MultiPathSender) GetPaths() []PathInfo {
 			Status:    p.Status.String(),
 			IsActive:  p.IfaceName == m.activePath,
 			TxBytes:   p.TxBytes,
+			RxBytes:   p.RxBytes,
 		}
 		p.mu.Unlock()
 		out = append(out, pi)
@@ -548,6 +609,9 @@ func (m *MultiPathSender) perPathRecvLoop(p *Path) {
 			time.Sleep(50 * time.Millisecond)
 			continue
 		}
+		p.mu.Lock()
+		p.RxBytes += uint64(n)
+		p.mu.Unlock()
 		data := make([]byte, n)
 		copy(data, buf[:n])
 		select {

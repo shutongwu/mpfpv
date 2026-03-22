@@ -187,12 +187,15 @@ func (s *Server) GetDevices() []web.DeviceInfo {
 			if sess.DeviceName != "" {
 				d.DeviceName = sess.DeviceName
 			}
-			for _, pr := range sess.PathRTTs {
-				d.PathRTTs = append(d.PathRTTs, web.DevicePathRTT{
-					Name:    pr.Name,
-					RTTms:   int(pr.RTTms),
-					TxBytes: pr.TxBytes,
-				})
+			for _, ai := range sess.Addrs {
+				if ai.NICName != "" {
+					d.PathRTTs = append(d.PathRTTs, web.DevicePathRTT{
+						Name:    ai.NICName,
+						RTTms:   int(ai.NICRTTms),
+						TxBytes: ai.NICTxBytes,
+						RxBytes: ai.NICRxBytes,
+					})
+				}
 			}
 			d.RxBytes = sess.RxBytes
 			d.TxBytes = sess.TxBytes

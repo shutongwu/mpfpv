@@ -46,11 +46,12 @@ type Header struct {
 	Seq      uint32 // big-endian, per-clientID
 }
 
-// PathRTT is a single NIC name + RTT + TX bytes reported by the client.
+// PathRTT is a single NIC name + RTT + TX/RX bytes reported by the client.
 type PathRTT struct {
 	Name    string
 	RTTms   uint16 // milliseconds
 	TxBytes uint64 // cumulative bytes sent through this path
+	RxBytes uint64 // cumulative bytes received on this path
 }
 
 // HeartbeatPayload is the 16-byte heartbeat payload, optionally followed

@@ -396,13 +396,6 @@ func (c *Client) sendHeartbeat() error {
 		ReplyPort:   replyPort,
 		TeamKeyHash: c.teamKeyHash,
 	}
-	// Include per-path RTT and TX bytes from multipath sender.
-	if c.multipath != nil {
-		for _, pi := range c.multipath.GetPaths() {
-			rttMs := uint16(pi.RTT.Milliseconds())
-			hb.PathRTTs = append(hb.PathRTTs, protocol.PathRTT{Name: pi.IfaceName, RTTms: rttMs, TxBytes: pi.TxBytes})
-		}
-	}
 	c.mu.Unlock()
 	payloadLen := protocol.EncodeHeartbeatWithName(buf[protocol.HeaderSize:], hb, c.deviceName)
 	buf = buf[:protocol.HeaderSize+payloadLen]
@@ -413,9 +406,9 @@ func (c *Client) sendHeartbeat() error {
 	c.hbTimeMu.Unlock()
 
 	if c.useMultipath {
-		// Send heartbeat through ALL paths so the server learns every
-		// source address and we can measure per-path RTT.
-		if err := c.multipath.SendAll(buf); err != nil {
+		// Send heartbeat through ALL paths. Each copy gets per-path
+		// data (NIC name, RTT, TxBytes, RxBytes) appended automatically.
+		if err := c.multipath.SendAllHeartbeat(buf); err != nil {
 			return fmt.Errorf("send heartbeat (multipath): %w", err)
 		}
 	} else {

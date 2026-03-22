@@ -20,10 +20,14 @@ import (
 
 // AddrInfo tracks a single source address of a client.
 type AddrInfo struct {
-	Addr     *net.UDPAddr
-	LastSeen time.Time
-	RxBytes  uint64 // bytes received from this address
-	TxBytes  uint64 // bytes sent to this address
+	Addr        *net.UDPAddr
+	LastSeen    time.Time
+	RxBytes     uint64 // bytes received from this address (server-measured)
+	TxBytes     uint64 // bytes sent to this address (server-measured)
+	NICName     string // NIC name reported by client heartbeat
+	NICRTTms    uint16 // RTT reported by client
+	NICTxBytes  uint64 // client-reported TX bytes for this NIC
+	NICRxBytes  uint64 // client-reported RX bytes for this NIC
 }
 
 // ClientSession tracks a connected client.
@@ -36,9 +40,8 @@ type ClientSession struct {
 	DeviceName   string             // device name reported by client
 	Addrs        map[string]*AddrInfo // srcAddr string -> info
 	LastSeen     time.Time
-	LastDataAddr *net.UDPAddr      // last address that sent a data packet (for failover reply)
-	PathRTTs     []protocol.PathRTT // per-NIC RTT reported by client
-	RxBytes      uint64             // total bytes received from client
+	LastDataAddr *net.UDPAddr // last address that sent a data packet (for failover reply)
+	RxBytes      uint64      // total bytes received from client
 	TxBytes      uint64             // total bytes sent to client
 }
 
@@ -358,7 +361,6 @@ func (s *Server) handleHeartbeat(hdr protocol.Header, payload []byte, from *net.
 			SendMode:   hb.SendMode,
 			ReplyPort:  hb.ReplyPort,
 			DeviceName: hb.DeviceName,
-			PathRTTs:   hb.PathRTTs,
 			Addrs:      make(map[string]*AddrInfo),
 			LastSeen:   now,
 		}
@@ -383,9 +385,6 @@ func (s *Server) handleHeartbeat(hdr protocol.Header, payload []byte, from *net.
 		if hb.DeviceName != "" {
 			session.DeviceName = hb.DeviceName
 		}
-		if len(hb.PathRTTs) > 0 {
-			session.PathRTTs = hb.PathRTTs
-		}
 
 		// If client reconnects with 0.0.0.0, use the previously assigned IP.
 		if vip.Equal(net.IPv4zero) && !session.VirtualIP.Equal(net.IPv4zero) {
@@ -393,16 +392,25 @@ func (s *Server) handleHeartbeat(hdr protocol.Header, payload []byte, from *net.
 		}
 	}
 
-	// Update/add source address.
+	// Update/add source address with per-NIC data from heartbeat.
 	addrKey := from.String()
-	if ai, ok := session.Addrs[addrKey]; ok {
-		ai.LastSeen = now
-	} else {
-		session.Addrs[addrKey] = &AddrInfo{
+	ai, exists := session.Addrs[addrKey]
+	if !exists {
+		ai = &AddrInfo{
 			Addr:     from,
 			LastSeen: now,
 		}
+		session.Addrs[addrKey] = ai
 		log.Infof("server: clientID=%d added addr %s (total: %d)", clientID, addrKey, len(session.Addrs))
+	}
+	ai.LastSeen = now
+	// Store per-NIC data if this heartbeat carries it.
+	if len(hb.PathRTTs) > 0 {
+		p := hb.PathRTTs[0]
+		ai.NICName = p.Name
+		ai.NICRTTms = p.RTTms
+		ai.NICTxBytes = p.TxBytes
+		ai.NICRxBytes = p.RxBytes
 	}
 
 	s.sendHeartbeatAck(from, session.VirtualIP, session.PrefixLen, protocol.AckStatusOK)

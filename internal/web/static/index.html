@@ -536,27 +536,24 @@ button.danger:hover { background: #4a1525; border-color: #f85149; }
       // Per-NIC details
       if (d.pathRTTs && d.pathRTTs.length > 0) {
         html += '<table style="margin-top:8px"><thead><tr>';
-        html += '<th>NIC</th><th>RTT</th><th>Upload</th><th>Status</th>';
+        html += '<th>NIC</th><th>RTT</th><th>Upload (TX)</th><th>Download (RX)</th>';
         html += '</tr></thead><tbody>';
         for (var j = 0; j < d.pathRTTs.length; j++) {
           var p = d.pathRTTs[j];
-          // Per-NIC bandwidth from client-reported TxBytes
-          var nicBw = '-';
           var nicKey = d.clientID + ':' + p.name;
           var nowMs = Date.now();
           var prevNic = prevDeviceBytes[nicKey];
-          if (prevNic && p.txBytes > 0) {
+          var txBw = '-', rxBw = '-';
+          if (prevNic) {
             var dtNic = (nowMs - prevNic.time) / 1000;
             if (dtNic > 0.5) {
-              var txDelta = p.txBytes - prevNic.tx;
-              if (txDelta > 0 && txDelta < 0xFFFFFFFF) {
-                nicBw = formatBits(txDelta * 8 / dtNic);
-              }
+              var txD = p.txBytes - prevNic.tx;
+              var rxD = p.rxBytes - prevNic.rx;
+              if (txD > 0 && txD < 0xFFFFFFFF) txBw = formatBits(txD * 8 / dtNic);
+              if (rxD > 0 && rxD < 0xFFFFFFFF) rxBw = formatBits(rxD * 8 / dtNic);
             }
           }
-          if (p.txBytes > 0) {
-            prevDeviceBytes[nicKey] = {tx: p.txBytes, time: nowMs};
-          }
+          prevDeviceBytes[nicKey] = {tx: p.txBytes, rx: p.rxBytes, time: nowMs};
           var rttBadge = p.rttMs > 0
             ? (p.rttMs < 50 ? '<span class="badge badge-green">' + p.rttMs + 'ms</span>'
               : p.rttMs < 100 ? '<span class="badge badge-yellow">' + p.rttMs + 'ms</span>'
@@ -565,8 +562,8 @@ button.danger:hover { background: #4a1525; border-color: #f85149; }
           html += '<tr>';
           html += '<td>' + esc(p.name) + '</td>';
           html += '<td>' + rttBadge + '</td>';
-          html += '<td>' + nicBw + '</td>';
-          html += '<td><span class="badge badge-green">active</span></td>';
+          html += '<td style="color:#3fb950">' + txBw + '</td>';
+          html += '<td style="color:#58a6ff">' + rxBw + '</td>';
           html += '</tr>';
         }
         html += '</tbody></table>';

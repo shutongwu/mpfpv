@@ -73,7 +73,7 @@ func DecodeHeartbeat(buf []byte) (HeartbeatPayload, error) {
 	}
 	if len(buf) > HeartbeatPayloadSize {
 		ext := buf[HeartbeatPayloadSize:]
-		// Look for \x00 separator between device name and path RTT data.
+		// Look for \x00 separator between device name and per-path data.
 		sepIdx := -1
 		for i, b := range ext {
 			if b == 0x00 {
@@ -83,28 +83,20 @@ func DecodeHeartbeat(buf []byte) (HeartbeatPayload, error) {
 		}
 		if sepIdx >= 0 {
 			hb.DeviceName = string(ext[:sepIdx])
-			// Parse path RTT data after separator.
-			rttData := ext[sepIdx+1:]
-			if len(rttData) >= 1 {
-				count := int(rttData[0])
+			// Parse single-path data: [name_len] [name] [rtt 2B] [tx 4B] [rx 4B]
+			d := ext[sepIdx+1:]
+			if len(d) >= 1 {
+				nameLen := int(d[0])
 				pos := 1
-				for i := 0; i < count && pos < len(rttData); i++ {
-					nameLen := int(rttData[pos])
-					pos++
-					if pos+nameLen+2 > len(rttData) {
-						break
-					}
-					name := string(rttData[pos : pos+nameLen])
+				if pos+nameLen+2+4+4 <= len(d) {
+					name := string(d[pos : pos+nameLen])
 					pos += nameLen
-					rttMs := uint16(rttData[pos])<<8 | uint16(rttData[pos+1])
+					rttMs := uint16(d[pos])<<8 | uint16(d[pos+1])
 					pos += 2
-					var txBytes uint64
-					if pos+4 <= len(rttData) {
-						tx32 := uint32(rttData[pos])<<24 | uint32(rttData[pos+1])<<16 | uint32(rttData[pos+2])<<8 | uint32(rttData[pos+3])
-						txBytes = uint64(tx32)
-						pos += 4
-					}
-					hb.PathRTTs = append(hb.PathRTTs, PathRTT{Name: name, RTTms: rttMs, TxBytes: txBytes})
+					tx := uint64(uint32(d[pos])<<24 | uint32(d[pos+1])<<16 | uint32(d[pos+2])<<8 | uint32(d[pos+3]))
+					pos += 4
+					rx := uint64(uint32(d[pos])<<24 | uint32(d[pos+1])<<16 | uint32(d[pos+2])<<8 | uint32(d[pos+3]))
+					hb.PathRTTs = append(hb.PathRTTs, PathRTT{Name: name, RTTms: rttMs, TxBytes: tx, RxBytes: rx})
 				}
 			}
 		} else {
@@ -124,28 +116,8 @@ func EncodeHeartbeatWithName(buf []byte, hb *HeartbeatPayload, deviceName string
 	if deviceName != "" {
 		n += copy(buf[n:], []byte(deviceName))
 	}
-	if len(hb.PathRTTs) > 0 {
-		buf[n] = 0x00 // separator
-		n++
-		buf[n] = byte(len(hb.PathRTTs))
-		n++
-		for _, p := range hb.PathRTTs {
-			nameBytes := []byte(p.Name)
-			buf[n] = byte(len(nameBytes))
-			n++
-			n += copy(buf[n:], nameBytes)
-			buf[n] = byte(p.RTTms >> 8)
-			buf[n+1] = byte(p.RTTms)
-			n += 2
-			// TxBytes as uint32 (wraps at 4GB, sufficient for rate calculation)
-			tx32 := uint32(p.TxBytes)
-			buf[n] = byte(tx32 >> 24)
-			buf[n+1] = byte(tx32 >> 16)
-			buf[n+2] = byte(tx32 >> 8)
-			buf[n+3] = byte(tx32)
-			n += 4
-		}
-	}
+	// PathRTTs are no longer encoded here; SendAllHeartbeat appends
+	// per-path data directly to each heartbeat copy.
 	return n
 }
 
