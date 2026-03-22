@@ -176,10 +176,12 @@ Heartbeat payload（固定 16 字节 + 可变长设备名）：
 
 | 节点 | IP | 虚拟 IP | 说明 |
 |------|-----|---------|------|
-| 阿里云 ECS | 114.55.58.24 | 10.99.0.254 | 服务器，UDP :9800，Web UI :9801 |
-| PVE Ubuntu VM | 192.168.1.197 | 10.99.0.1 | 测试客户端 (ubuntu-dev) |
-| Radxa Zero3 | (Tailscale) | 10.99.0.3 | 无人机端客户端 (radxa-zero3) |
-| Windows PC | (WLAN) | 10.99.0.2 | 地面站 GUI 客户端 (DESKTOP-QE166QH) |
+| PVE Ubuntu VM (cloud) | 192.168.1.197, cloudfpv.top:9800 | 10.99.0.254 | **服务器**，UDP :9800，Web UI :9801 |
+| Radxa Zero3 | (5G 双网卡) | 10.99.0.3 | 无人机端客户端 (radxa-zero3) |
+| 联想小新 | (Tailscale 100.124.138.13) | 10.99.0.2 | 测试客户端 (cloud-XiaoXinPro) |
+| Windows PC | (WLAN) | 10.99.0.1 | 地面站 GUI 客户端 (DESKTOP-QE166QH) |
+
+服务器已从阿里云迁移到家庭 PVE VM，通过 DDNS `cloudfpv.top` + 路由器端口转发（UDP 9800）对外提供服务。
 
 **注意**：绝对不要在 PVE 宿主机（192.168.1.100）上部署，会干扰整个网络。用 PVE 内的 Ubuntu VM。
 
