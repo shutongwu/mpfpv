@@ -114,9 +114,18 @@ type ServerConfigAPI interface {
 	UpdateServerConfig(teamKey, listenAddr string) error
 }
 
+// ServerStats holds server-wide aggregate counters.
+type ServerStats struct {
+	RxBytes     uint64 `json:"rxBytes"`
+	TxBytes     uint64 `json:"txBytes"`
+	DeviceCount int    `json:"deviceCount"`
+	OnlineCount int    `json:"onlineCount"`
+}
+
 // DeviceAPI exposes device management (IP pool + sessions merge) to the Web UI.
 type DeviceAPI interface {
 	GetDevices() []DeviceInfo
+	GetServerStats() ServerStats
 	UpdateDeviceIP(clientID uint16, newIP string) error
 	DeleteDevice(clientID uint16) error
 }
@@ -258,6 +267,14 @@ func NewHandler(mode string, api interface{}, opts ...interface{}) http.Handler 
 
 		// Register device management endpoints if DeviceAPI is provided.
 		if devAPI != nil {
+			mux.HandleFunc("/api/stats", func(w http.ResponseWriter, r *http.Request) {
+				if r.Method != http.MethodGet {
+					http.Error(w, "method not allowed", http.StatusMethodNotAllowed)
+					return
+				}
+				writeJSON(w, devAPI.GetServerStats())
+			})
+
 			mux.HandleFunc("/api/devices", func(w http.ResponseWriter, r *http.Request) {
 				if r.Method != http.MethodGet {
 					http.Error(w, "method not allowed", http.StatusMethodNotAllowed)

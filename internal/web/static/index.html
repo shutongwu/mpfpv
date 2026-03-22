@@ -438,9 +438,11 @@ button.danger:hover { background: #4a1525; border-color: #f85149; }
       }).catch(function() {});
     }
 
-    fetch('/api/devices').then(function(r) { return r.json(); })
-    .then(function(devices) {
-      renderServer(devices);
+    Promise.all([
+      fetch('/api/devices').then(function(r) { return r.json(); }),
+      fetch('/api/stats').then(function(r) { return r.json(); }).catch(function() { return null; })
+    ]).then(function(results) {
+      renderServer(results[0], results[1]);
     }).catch(function(e) {
       document.getElementById('app').innerHTML = '<p class="error-msg">Failed to fetch data: ' + esc(e.message) + '</p>';
     });
@@ -476,7 +478,9 @@ button.danger:hover { background: #4a1525; border-color: #f85149; }
     }
   }
 
-  function renderServer(devices) {
+  var prevStats = null;
+
+  function renderServer(devices, stats) {
     // First render: build stable DOM layout
     if (!serverInitialized) {
       var layoutHtml = '';
@@ -504,6 +508,26 @@ button.danger:hover { background: #4a1525; border-color: #f85149; }
     }
 
     var html = '';
+
+    // Server overview card
+    if (stats) {
+      var srvBw = '';
+      var nowS = Date.now();
+      if (prevStats) {
+        var dtS = (nowS - prevStats.time) / 1000;
+        if (dtS > 0.5) {
+          var rxR = (stats.rxBytes - prevStats.rx) * 8 / dtS;
+          var txR = (stats.txBytes - prevStats.tx) * 8 / dtS;
+          srvBw = '<span style="color:#3fb950">&uarr; ' + formatBits(rxR) + '</span> &nbsp; '
+                + '<span style="color:#58a6ff">&darr; ' + formatBits(txR) + '</span>';
+        }
+      }
+      prevStats = {rx: stats.rxBytes, tx: stats.txBytes, time: nowS};
+      html += '<div class="card"><div class="card-row">';
+      html += '<div class="card-item"><div class="card-label">Devices</div><div class="card-value">' + stats.onlineCount + ' / ' + stats.deviceCount + ' online</div></div>';
+      html += '<div class="card-item"><div class="card-label">Server Bandwidth</div><div class="card-value">' + (srvBw || '<span class="loading">calculating...</span>') + '</div></div>';
+      html += '</div></div>';
+    }
 
     // Devices section — card per device
     html += '<h2>Devices</h2>';

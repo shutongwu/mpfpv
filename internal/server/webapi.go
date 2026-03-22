@@ -152,6 +152,30 @@ func (s *Server) DeleteClient(id uint16) error {
 	return nil
 }
 
+// GetServerStats returns server-wide aggregate statistics.
+func (s *Server) GetServerStats() web.ServerStats {
+	s.ipPoolLock.Lock()
+	deviceCount := len(s.ipPool)
+	s.ipPoolLock.Unlock()
+
+	s.sessionsLock.RLock()
+	onlineCount := 0
+	now := time.Now()
+	for _, sess := range s.sessions {
+		if now.Sub(sess.LastSeen) < s.clientTimeout {
+			onlineCount++
+		}
+	}
+	s.sessionsLock.RUnlock()
+
+	return web.ServerStats{
+		RxBytes:     s.totalRx,
+		TxBytes:     s.totalTx,
+		DeviceCount: deviceCount,
+		OnlineCount: onlineCount,
+	}
+}
+
 // GetDevices returns all registered devices (from IP pool), merged with
 // live session data for online status.
 func (s *Server) GetDevices() []web.DeviceInfo {

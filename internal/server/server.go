@@ -56,6 +56,8 @@ type Server struct {
 	sessionsLock sync.RWMutex
 	routeLock    sync.RWMutex
 	seq          uint32 // server's own seq (clientID=0), accessed atomically
+	totalRx      uint64 // total bytes received (all clients)
+	totalTx      uint64 // total bytes sent (all clients)
 
 	// Configurable timeouts (stored as durations for convenience).
 	clientTimeout time.Duration
@@ -283,6 +285,20 @@ func (s *Server) handlePacket(data []byte, from *net.UDPAddr) {
 		return
 	}
 
+	// Count all received bytes per session/addr (before dedup).
+	clientID := hdr.ClientID
+	pktLen := uint64(len(data))
+	s.totalRx += pktLen
+	s.sessionsLock.RLock()
+	if sess, ok := s.sessions[clientID]; ok {
+		sess.RxBytes += pktLen
+		addrKey := from.String()
+		if ai, ok := sess.Addrs[addrKey]; ok {
+			ai.RxBytes += pktLen
+		}
+	}
+	s.sessionsLock.RUnlock()
+
 	payload := data[protocol.HeaderSize:]
 
 	switch hdr.Type {
@@ -459,16 +475,13 @@ func (s *Server) handleData(hdr protocol.Header, payload []byte, from *net.UDPAd
 		return
 	}
 
-	// Update source address last seen time and byte counters.
-	pktLen := uint64(len(rawPacket))
+	// Update source address last seen time.
 	addrKey := from.String()
 	if ai, ok := session.Addrs[addrKey]; ok {
 		ai.LastSeen = time.Now()
-		ai.RxBytes += pktLen
 	}
 	session.LastSeen = time.Now()
 	session.LastDataAddr = from
-	session.RxBytes += pktLen
 	s.sessionsLock.RUnlock()
 
 	// Read destination IP from inner IP header.
@@ -538,6 +551,7 @@ func (s *Server) sendToClient(clientID uint16, rawPacket []byte) {
 			return
 		}
 		session.TxBytes += pktLen
+		s.totalTx += pktLen
 		// Also send to ReplyPort if it differs from the original port.
 		if replyPort > 0 && int(replyPort) != dst.Port {
 			rpAddr := &net.UDPAddr{IP: dst.IP, Port: int(replyPort), Zone: dst.Zone}
