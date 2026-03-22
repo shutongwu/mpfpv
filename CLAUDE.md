@@ -211,7 +211,4 @@ Heartbeat payload（固定 16 字节 + 可变长设备名）：
 
 ## 参考代码
 
-`可参考项目/engarde/` 包含 engarde 源码，关键参考文件：
-- `cmd/engarde-client/main.go` — 多网卡发现 + 转发逻辑
-- `cmd/engarde-client/udpconn_bindtodevice.go` — SO_BINDTODEVICE 实现
-- `cmd/engarde-server/main.go` — 客户端追踪 + 广播回包
+engarde（https://github.com/porech/engarde）是多路径发送的参考实现。
