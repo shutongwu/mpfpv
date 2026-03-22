@@ -64,10 +64,11 @@ type RouteEntry struct {
 	ClientID  uint16 `json:"clientID"`
 }
 
-// DevicePathRTT is a NIC name + RTT pair for the API.
+// DevicePathRTT is a NIC name + RTT + TX bytes for the API.
 type DevicePathRTT struct {
-	Name  string `json:"name"`
-	RTTms int    `json:"rttMs"`
+	Name    string `json:"name"`
+	RTTms   int    `json:"rttMs"`
+	TxBytes uint64 `json:"txBytes"`
 }
 
 // DeviceInfo represents a registered device from the IP pool,

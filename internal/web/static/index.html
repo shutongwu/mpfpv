@@ -505,62 +505,96 @@ button.danger:hover { background: #4a1525; border-color: #f85149; }
 
     var html = '';
 
-    // Devices section — unified view of all registered devices
-    html += '<h2>Devices</h2><div class="card">';
+    // Devices section — card per device
+    html += '<h2>Devices</h2>';
     if (!devices || devices.length === 0) {
-      html += '<span class="loading">No registered devices</span>';
-    } else {
-      html += '<table><thead><tr>';
-      html += '<th>Device Name</th><th>Virtual IP</th><th>Status</th><th>Send Mode</th><th>RTT</th><th>Bandwidth</th><th>Links</th><th>Last Seen</th><th></th>';
-      html += '</tr></thead><tbody>';
-      for (var i = 0; i < devices.length; i++) {
-        var d = devices[i];
-        var statusBadge = d.online
-          ? '<span class="badge badge-green">online</span>'
-          : '<span class="badge badge-gray">offline</span>';
-        var inputId = 'dev-ip-' + d.clientID;
-        var isExpanded = expandedClient === d.clientID;
-        html += '<tr class="' + (isExpanded ? 'expanded' : '') + '" style="cursor:pointer" onclick="mpfpv.toggleClient(' + d.clientID + ')">';
-        html += '<td>' + esc(d.deviceName || 'ID:' + d.clientID) + '</td>';
-        html += '<td><input type="text" id="' + inputId + '" value="' + esc(d.virtualIP) + '" style="width:120px;padding:2px 6px;background:#0d1117;color:#e6edf3;border:1px solid #30363d;border-radius:3px;font-size:13px;" onclick="event.stopPropagation()"></td>';
-        html += '<td>' + statusBadge + '</td>';
-        html += '<td>' + (d.sendMode ? '<span class="badge badge-blue">' + esc(d.sendMode) + '</span>' : '-') + '</td>';
-        var rttHtml = '-';
-        if (d.pathRTTs && d.pathRTTs.length > 0) {
-          rttHtml = d.pathRTTs.map(function(p) {
-            return '<span class="badge badge-blue" style="margin-right:4px">' + esc(p.name) + ' ' + p.rttMs + 'ms</span>';
-          }).join('');
-        }
-        html += '<td>' + rttHtml + '</td>';
-        // Bandwidth rate calculation from cumulative byte counters.
-        var bwHtml = '-';
-        if (d.online && (d.rxBytes > 0 || d.txBytes > 0)) {
-          var now = Date.now();
-          var prev = prevDeviceBytes[d.clientID];
-          if (prev) {
-            var dt = (now - prev.time) / 1000; // seconds
-            if (dt > 0.5) {
-              var rxRate = (d.rxBytes - prev.rx) * 8 / dt;
-              var txRate = (d.txBytes - prev.tx) * 8 / dt;
-              bwHtml = '<span style="color:#3fb950">&uarr;' + formatBits(rxRate) + '</span> '
-                     + '<span style="color:#58a6ff">&darr;' + formatBits(txRate) + '</span>';
+      html += '<div class="card"><span class="loading">No registered devices</span></div>';
+    }
+    for (var i = 0; i < devices.length; i++) {
+      var d = devices[i];
+      var statusBadge = d.online
+        ? '<span class="badge badge-green">online</span>'
+        : '<span class="badge badge-gray">offline</span>';
+      var inputId = 'dev-ip-' + d.clientID;
+
+      html += '<div class="card">';
+      // Header row: name, IP, status, actions
+      html += '<div class="card-row">';
+      html += '<div class="card-item"><div class="card-label">Device</div><div class="card-value">' + esc(d.deviceName || 'ID:' + d.clientID) + '</div></div>';
+      html += '<div class="card-item"><div class="card-label">Virtual IP</div><div class="card-value"><input type="text" id="' + inputId + '" value="' + esc(d.virtualIP) + '" style="width:120px;padding:2px 6px;background:#0d1117;color:#e6edf3;border:1px solid #30363d;border-radius:3px;font-size:14px;"></div></div>';
+      html += '<div class="card-item"><div class="card-label">Status</div><div class="card-value">' + statusBadge + '</div></div>';
+      if (d.sendMode) {
+        html += '<div class="card-item"><div class="card-label">Mode</div><div class="card-value"><span class="badge badge-blue">' + esc(d.sendMode) + '</span></div></div>';
+      }
+      html += '<div class="card-item"><div class="card-label">Last Seen</div><div class="card-value">' + formatTime(d.lastSeen) + '</div></div>';
+      html += '<div class="card-item" style="text-align:right"><div class="card-label">&nbsp;</div><div class="card-value">';
+      html += '<button onclick="mpfpv.saveDeviceIP(' + d.clientID + ', \'' + inputId + '\')">Save</button> ';
+      html += '<button class="danger" onclick="mpfpv.deleteDevice(' + d.clientID + ', \'' + esc(d.deviceName || '') + '\')">Remove</button>';
+      html += '</div></div>';
+      html += '</div>';
+
+      // Per-NIC details
+      if (d.pathRTTs && d.pathRTTs.length > 0) {
+        html += '<table style="margin-top:8px"><thead><tr>';
+        html += '<th>NIC</th><th>RTT</th><th>Upload</th><th>Status</th>';
+        html += '</tr></thead><tbody>';
+        for (var j = 0; j < d.pathRTTs.length; j++) {
+          var p = d.pathRTTs[j];
+          // Per-NIC bandwidth from client-reported TxBytes
+          var nicBw = '-';
+          var nicKey = d.clientID + ':' + p.name;
+          var nowMs = Date.now();
+          var prevNic = prevDeviceBytes[nicKey];
+          if (prevNic && p.txBytes > 0) {
+            var dtNic = (nowMs - prevNic.time) / 1000;
+            if (dtNic > 0.5) {
+              var txDelta = p.txBytes - prevNic.tx;
+              if (txDelta > 0 && txDelta < 0xFFFFFFFF) {
+                nicBw = formatBits(txDelta * 8 / dtNic);
+              }
             }
           }
-          prevDeviceBytes[d.clientID] = {rx: d.rxBytes, tx: d.txBytes, time: now};
+          if (p.txBytes > 0) {
+            prevDeviceBytes[nicKey] = {tx: p.txBytes, time: nowMs};
+          }
+          var rttBadge = p.rttMs > 0
+            ? (p.rttMs < 50 ? '<span class="badge badge-green">' + p.rttMs + 'ms</span>'
+              : p.rttMs < 100 ? '<span class="badge badge-yellow">' + p.rttMs + 'ms</span>'
+              : '<span class="badge badge-red">' + p.rttMs + 'ms</span>')
+            : '<span class="badge badge-gray">-</span>';
+          html += '<tr>';
+          html += '<td>' + esc(p.name) + '</td>';
+          html += '<td>' + rttBadge + '</td>';
+          html += '<td>' + nicBw + '</td>';
+          html += '<td><span class="badge badge-green">active</span></td>';
+          html += '</tr>';
         }
-        html += '<td>' + bwHtml + '</td>';
-        html += '<td>' + d.addrCount + '</td>';
-        html += '<td>' + formatTime(d.lastSeen) + '</td>';
-        html += '<td><button onclick="event.stopPropagation(); mpfpv.saveDeviceIP(' + d.clientID + ', \'' + inputId + '\')">Save</button> ';
-        html += '<button class="danger" onclick="event.stopPropagation(); mpfpv.deleteDevice(' + d.clientID + ', \'' + esc(d.deviceName || '') + '\')">Remove</button></td>';
-        html += '</tr>';
-        if (isExpanded && d.online) {
-          html += '<tr class="detail-row"><td colspan="9" id="detail-' + d.clientID + '"><span class="loading">Loading...</span></td></tr>';
-        }
+        html += '</tbody></table>';
       }
-      html += '</tbody></table>';
+
+      // Server-side total bandwidth
+      if (d.online) {
+        var totalBw = '';
+        var nowT = Date.now();
+        var prevT = prevDeviceBytes['total:' + d.clientID];
+        if (prevT && (d.rxBytes > 0 || d.txBytes > 0)) {
+          var dtT = (nowT - prevT.time) / 1000;
+          if (dtT > 0.5) {
+            var rxR = (d.rxBytes - prevT.rx) * 8 / dtT;
+            var txR = (d.txBytes - prevT.tx) * 8 / dtT;
+            if (rxR >= 0 && txR >= 0) {
+              totalBw = '<div style="margin-top:8px;font-size:12px;color:#8b949e">'
+                + 'Server total: <span style="color:#3fb950">&uarr;' + formatBits(rxR) + '</span> '
+                + '<span style="color:#58a6ff">&darr;' + formatBits(txR) + '</span></div>';
+            }
+          }
+        }
+        prevDeviceBytes['total:' + d.clientID] = {rx: d.rxBytes, tx: d.txBytes, time: nowT};
+        html += totalBw;
+      }
+
+      html += '</div>';
     }
-    html += '</div>';
 
     document.getElementById('srv-data-area').innerHTML = html;
 

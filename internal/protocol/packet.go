@@ -98,7 +98,13 @@ func DecodeHeartbeat(buf []byte) (HeartbeatPayload, error) {
 					pos += nameLen
 					rttMs := uint16(rttData[pos])<<8 | uint16(rttData[pos+1])
 					pos += 2
-					hb.PathRTTs = append(hb.PathRTTs, PathRTT{Name: name, RTTms: rttMs})
+					var txBytes uint64
+					if pos+4 <= len(rttData) {
+						tx32 := uint32(rttData[pos])<<24 | uint32(rttData[pos+1])<<16 | uint32(rttData[pos+2])<<8 | uint32(rttData[pos+3])
+						txBytes = uint64(tx32)
+						pos += 4
+					}
+					hb.PathRTTs = append(hb.PathRTTs, PathRTT{Name: name, RTTms: rttMs, TxBytes: txBytes})
 				}
 			}
 		} else {
@@ -131,6 +137,13 @@ func EncodeHeartbeatWithName(buf []byte, hb *HeartbeatPayload, deviceName string
 			buf[n] = byte(p.RTTms >> 8)
 			buf[n+1] = byte(p.RTTms)
 			n += 2
+			// TxBytes as uint32 (wraps at 4GB, sufficient for rate calculation)
+			tx32 := uint32(p.TxBytes)
+			buf[n] = byte(tx32 >> 24)
+			buf[n+1] = byte(tx32 >> 16)
+			buf[n+2] = byte(tx32 >> 8)
+			buf[n+3] = byte(tx32)
+			n += 4
 		}
 	}
 	return n

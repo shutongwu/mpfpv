@@ -396,11 +396,11 @@ func (c *Client) sendHeartbeat() error {
 		ReplyPort:   replyPort,
 		TeamKeyHash: c.teamKeyHash,
 	}
-	// Include per-path RTT data from multipath sender.
+	// Include per-path RTT and TX bytes from multipath sender.
 	if c.multipath != nil {
 		for _, pi := range c.multipath.GetPaths() {
 			rttMs := uint16(pi.RTT.Milliseconds())
-			hb.PathRTTs = append(hb.PathRTTs, protocol.PathRTT{Name: pi.IfaceName, RTTms: rttMs})
+			hb.PathRTTs = append(hb.PathRTTs, protocol.PathRTT{Name: pi.IfaceName, RTTms: rttMs, TxBytes: pi.TxBytes})
 		}
 	}
 	c.mu.Unlock()

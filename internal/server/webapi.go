@@ -189,8 +189,9 @@ func (s *Server) GetDevices() []web.DeviceInfo {
 			}
 			for _, pr := range sess.PathRTTs {
 				d.PathRTTs = append(d.PathRTTs, web.DevicePathRTT{
-					Name:  pr.Name,
-					RTTms: int(pr.RTTms),
+					Name:    pr.Name,
+					RTTms:   int(pr.RTTms),
+					TxBytes: pr.TxBytes,
 				})
 			}
 			d.RxBytes = sess.RxBytes

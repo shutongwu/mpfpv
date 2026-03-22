@@ -60,6 +60,7 @@ type Path struct {
 	LastRecv   time.Time       // last time a packet was received on this path
 	Status     PathStatus
 	missCount  int // consecutive heartbeat misses
+	TxBytes    uint64 // bytes sent through this path
 	mu         sync.Mutex
 	closed     chan struct{} // closed when path is deliberately removed; used by perPathRecvLoop
 }
@@ -79,6 +80,7 @@ type PathInfo struct {
 	LastRecv  time.Time
 	Status    string
 	IsActive  bool // true if this is the active path in failover mode
+	TxBytes   uint64
 }
 
 // MultiPathSender manages sending data over multiple network interfaces.
@@ -303,6 +305,7 @@ func (m *MultiPathSender) GetPaths() []PathInfo {
 			LastRecv:  p.LastRecv,
 			Status:    p.Status.String(),
 			IsActive:  p.IfaceName == m.activePath,
+			TxBytes:   p.TxBytes,
 		}
 		p.mu.Unlock()
 		out = append(out, pi)
@@ -355,6 +358,9 @@ func (m *MultiPathSender) sendRedundantLocked(data []byte) error {
 			}
 			continue
 		}
+		p.mu.Lock()
+		p.TxBytes += uint64(len(data))
+		p.mu.Unlock()
 		sentCount++
 	}
 	if sentCount == 0 {
@@ -388,6 +394,9 @@ func (m *MultiPathSender) sendFailoverLocked(data []byte) error {
 		p.mu.Unlock()
 		return err
 	}
+	p.mu.Lock()
+	p.TxBytes += uint64(len(data))
+	p.mu.Unlock()
 	return nil
 }
 
