@@ -61,8 +61,7 @@ type Path struct {
 	Status     PathStatus
 	missCount  int // consecutive heartbeat misses
 	mu         sync.Mutex
-	closeCh    chan struct{} // closed when path is deliberately removed
-	sendCh     chan []byte   // per-path send channel; dedicated goroutine drains it
+	closed     chan struct{} // closed when path is deliberately removed; used by perPathRecvLoop
 }
 
 // RecvPacket is a packet received from the server on any path.
@@ -334,10 +333,9 @@ func (m *MultiPathSender) SetSendMode(mode uint8) {
 // --- internal methods ---
 
 func (m *MultiPathSender) sendRedundantLocked(data []byte) error {
-	// Copy data into each path's sendCh. Each path has a dedicated send
-	// goroutine that drains the channel and calls WriteToUDP. A blocking
-	// write on one dying NIC only stalls that goroutine — other paths
-	// continue sending independently with zero delay.
+	// Serial direct WriteToUDP to each active path. SO_SNDTIMEO (50ms)
+	// on the socket ensures a dying NIC cannot block for more than 50ms,
+	// so the total worst-case latency is 50ms * number_of_paths.
 	sentCount := 0
 	for _, p := range m.paths {
 		p.mu.Lock()
@@ -346,18 +344,20 @@ func (m *MultiPathSender) sendRedundantLocked(data []byte) error {
 		if status == PathDown {
 			continue
 		}
-		// Copy the packet for this path (buffer reuse safety).
-		pkt := make([]byte, len(data))
-		copy(pkt, data)
-		select {
-		case p.sendCh <- pkt:
-			sentCount++
-		default:
-			// Channel full — path is congested or stuck; skip silently.
+		if _, err := p.Conn.WriteToUDP(data, m.serverAddr); err != nil {
+			p.mu.Lock()
+			wasSuspect := p.Status == PathSuspect
+			p.Status = PathSuspect
+			p.mu.Unlock()
+			if !wasSuspect {
+				log.Warnf("multipath: send via %s failed: %v", p.IfaceName, err)
+			}
+			continue
 		}
+		sentCount++
 	}
 	if sentCount == 0 {
-		return fmt.Errorf("transport: all paths congested or down")
+		return fmt.Errorf("transport: all paths failed or down")
 	}
 	return nil
 }
@@ -473,8 +473,7 @@ func (m *MultiPathSender) addPath(info *InterfaceInfo) {
 		Conn:      conn,
 		Status:    PathActive,
 		LastRecv:  time.Now(),
-		closeCh:   make(chan struct{}),
-		sendCh:    make(chan []byte, 256),
+		closed:    make(chan struct{}),
 	}
 
 	m.mu.Lock()
@@ -485,10 +484,6 @@ func (m *MultiPathSender) addPath(info *InterfaceInfo) {
 		"iface": info.Name,
 		"addr":  localAddr.String(),
 	}).Info("path added")
-
-	// Start dedicated send goroutine for this path.
-	m.wg.Add(1)
-	go m.pathSendLoop(p)
 
 	// Start receive goroutine for this path (NAT compatibility).
 	m.wg.Add(1)
@@ -507,10 +502,10 @@ func (m *MultiPathSender) removePath(name string) {
 		return
 	}
 
-	// Close socket FIRST. This unblocks any WriteToUDP that is blocking
-	// on this dying NIC, causing it to return an error immediately.
-	// Safe to call concurrently with WriteToUDP in Go.
-	close(p.closeCh)
+	// Close socket FIRST. This unblocks any in-flight WriteToUDP (which
+	// holds only RLock), causing it to return an error immediately.
+	// Also signals perPathRecvLoop to exit via the closed channel.
+	close(p.closed)
 	p.Conn.Close()
 
 	// Now acquire write lock and remove from map.
@@ -519,34 +514,6 @@ func (m *MultiPathSender) removePath(name string) {
 	m.mu.Unlock()
 
 	log.WithField("iface", name).Info("path removed")
-}
-
-// pathSendLoop is a dedicated send goroutine for one path. It drains sendCh
-// and calls WriteToUDP. If the NIC dies and WriteToUDP blocks, only THIS
-// goroutine is affected — other paths' send goroutines keep running.
-func (m *MultiPathSender) pathSendLoop(p *Path) {
-	defer m.wg.Done()
-	for {
-		select {
-		case pkt, ok := <-p.sendCh:
-			if !ok {
-				return
-			}
-			if _, err := p.Conn.WriteToUDP(pkt, m.serverAddr); err != nil {
-				p.mu.Lock()
-				wasSuspect := p.Status == PathSuspect
-				p.Status = PathSuspect
-				p.mu.Unlock()
-				if !wasSuspect {
-					log.Warnf("multipath: send via %s failed: %v", p.IfaceName, err)
-				}
-			}
-		case <-p.closeCh:
-			return
-		case <-m.stopCh:
-			return
-		}
-	}
 }
 
 // perPathRecvLoop reads from a per-NIC socket. Needed because NAT mappings
@@ -560,7 +527,7 @@ func (m *MultiPathSender) perPathRecvLoop(p *Path) {
 			select {
 			case <-m.stopCh:
 				return
-			case <-p.closeCh:
+			case <-p.closed:
 				return
 			default:
 			}
@@ -618,14 +585,11 @@ func (m *MultiPathSender) AddPathForTest(name string, localAddr net.IP, conn *ne
 		Conn:      conn,
 		Status:    PathActive,
 		LastRecv:  time.Now(),
-		closeCh:   make(chan struct{}),
-		sendCh:    make(chan []byte, 256),
+		closed:    make(chan struct{}),
 	}
 	m.mu.Lock()
 	m.paths[name] = p
 	m.mu.Unlock()
-	m.wg.Add(1)
-	go m.pathSendLoop(p)
 }
 
 // InjectRecvForTest pushes a packet into the receive channel for testing.
