@@ -72,19 +72,66 @@ func DecodeHeartbeat(buf []byte) (HeartbeatPayload, error) {
 		TeamKeyHash: hash,
 	}
 	if len(buf) > HeartbeatPayloadSize {
-		hb.DeviceName = string(buf[HeartbeatPayloadSize:])
+		ext := buf[HeartbeatPayloadSize:]
+		// Look for \x00 separator between device name and path RTT data.
+		sepIdx := -1
+		for i, b := range ext {
+			if b == 0x00 {
+				sepIdx = i
+				break
+			}
+		}
+		if sepIdx >= 0 {
+			hb.DeviceName = string(ext[:sepIdx])
+			// Parse path RTT data after separator.
+			rttData := ext[sepIdx+1:]
+			if len(rttData) >= 1 {
+				count := int(rttData[0])
+				pos := 1
+				for i := 0; i < count && pos < len(rttData); i++ {
+					nameLen := int(rttData[pos])
+					pos++
+					if pos+nameLen+2 > len(rttData) {
+						break
+					}
+					name := string(rttData[pos : pos+nameLen])
+					pos += nameLen
+					rttMs := uint16(rttData[pos])<<8 | uint16(rttData[pos+1])
+					pos += 2
+					hb.PathRTTs = append(hb.PathRTTs, PathRTT{Name: name, RTTms: rttMs})
+				}
+			}
+		} else {
+			hb.DeviceName = string(ext)
+		}
 	}
 	return hb, nil
 }
 
 // EncodeHeartbeatWithName writes a heartbeat payload followed by an optional
-// device name. buf must have at least HeartbeatPayloadSize + len(deviceName)
-// bytes available. Returns the total number of bytes written.
+// device name and path RTT data. buf must be large enough.
+// Format: [16B fixed] [deviceName] [\x00 count nameLen name rttHi rttLo ...]
+// Returns the total number of bytes written.
 func EncodeHeartbeatWithName(buf []byte, hb *HeartbeatPayload, deviceName string) int {
 	EncodeHeartbeat(buf, hb)
 	n := HeartbeatPayloadSize
 	if deviceName != "" {
 		n += copy(buf[n:], []byte(deviceName))
+	}
+	if len(hb.PathRTTs) > 0 {
+		buf[n] = 0x00 // separator
+		n++
+		buf[n] = byte(len(hb.PathRTTs))
+		n++
+		for _, p := range hb.PathRTTs {
+			nameBytes := []byte(p.Name)
+			buf[n] = byte(len(nameBytes))
+			n++
+			n += copy(buf[n:], nameBytes)
+			buf[n] = byte(p.RTTms >> 8)
+			buf[n+1] = byte(p.RTTms)
+			n += 2
+		}
 	}
 	return n
 }
@@ -98,8 +145,8 @@ func EncodeHeartbeatAck(buf []byte, ack *HeartbeatAckPayload) {
 	copy(buf[0:4], ip)
 	buf[4] = ack.PrefixLen
 	buf[5] = ack.Status
-	buf[6] = 0
-	buf[7] = 0
+	buf[6] = byte(ack.MTU >> 8)
+	buf[7] = byte(ack.MTU)
 }
 
 // DecodeHeartbeatAck parses an 8-byte heartbeat ack payload from buf.
@@ -111,6 +158,7 @@ func DecodeHeartbeatAck(buf []byte) (HeartbeatAckPayload, error) {
 		AssignedIP: net.IP(append([]byte(nil), buf[0:4]...)),
 		PrefixLen:  buf[4],
 		Status:     buf[5],
+		MTU:        uint16(buf[6])<<8 | uint16(buf[7]),
 	}, nil
 }
 

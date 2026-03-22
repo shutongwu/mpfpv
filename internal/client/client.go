@@ -31,6 +31,7 @@ type Client struct {
 	teamKeyHash [8]byte
 	virtualIP   net.IP
 	prefixLen   uint8
+	serverMTU   int // MTU from server HeartbeatAck; 0 = not received
 	sendMode    uint8
 	deviceName  string // device name sent in heartbeats
 	seq         uint32 // atomic; incremented per Send call
@@ -125,9 +126,14 @@ func (c *Client) setupTUN() error {
 	c.mu.Lock()
 	vip := c.virtualIP
 	pl := c.prefixLen
+	srvMTU := c.serverMTU
 	c.mu.Unlock()
 
-	mtu := c.cfg.Client.MTU
+	// Prefer server-provided MTU, fall back to client config.
+	mtu := srvMTU
+	if mtu <= 0 {
+		mtu = c.cfg.Client.MTU
+	}
 	if mtu <= 0 {
 		mtu = tunnel.DefaultMTU
 	}
@@ -175,6 +181,9 @@ func (c *Client) Run(ctx context.Context) error {
 		// Try to create MultiPathSender for multi-NIC support.
 		mp, err := transport.NewMultiPathSender(c.serverAddr, c.sendMode, c.cfg.Client.ExcludedInterfaces)
 		if err == nil {
+			mp.OnPathChange = func() {
+				go c.sendHeartbeat()
+			}
 			if startErr := mp.Start(); startErr == nil {
 				c.multipath = mp
 				c.useMultipath = true
@@ -260,7 +269,13 @@ func (c *Client) tunReadLoop(ctx context.Context) {
 		return
 	}
 
-	mtu := c.cfg.Client.MTU
+	c.mu.Lock()
+	srvMTU2 := c.serverMTU
+	c.mu.Unlock()
+	mtu := srvMTU2
+	if mtu <= 0 {
+		mtu = c.cfg.Client.MTU
+	}
 	if mtu <= 0 {
 		mtu = tunnel.DefaultMTU
 	}
@@ -356,7 +371,8 @@ func (c *Client) heartbeatLoop(ctx context.Context) {
 // In multipath mode, heartbeats are sent via ALL paths (SendAll) so the
 // server learns every source address and each path gets RTT probed.
 func (c *Client) sendHeartbeat() error {
-	buf := make([]byte, protocol.HeaderSize+protocol.HeartbeatPayloadSize+len(c.deviceName))
+	// Reserve space: header + fixed payload + device name + \x00 + RTT data
+	buf := make([]byte, protocol.HeaderSize+protocol.HeartbeatPayloadSize+len(c.deviceName)+256)
 
 	seq := atomic.AddUint32(&c.seq, 1) - 1 // first seq = 0
 
@@ -379,6 +395,13 @@ func (c *Client) sendHeartbeat() error {
 		SendMode:    c.sendMode,
 		ReplyPort:   replyPort,
 		TeamKeyHash: c.teamKeyHash,
+	}
+	// Include per-path RTT data from multipath sender.
+	if c.multipath != nil {
+		for _, pi := range c.multipath.GetPaths() {
+			rttMs := uint16(pi.RTT.Milliseconds())
+			hb.PathRTTs = append(hb.PathRTTs, protocol.PathRTT{Name: pi.IfaceName, RTTms: rttMs})
+		}
 	}
 	c.mu.Unlock()
 	payloadLen := protocol.EncodeHeartbeatWithName(buf[protocol.HeaderSize:], hb, c.deviceName)
@@ -514,6 +537,9 @@ func (c *Client) handleHeartbeatAck(hdr protocol.Header, payload []byte) {
 		c.mu.Lock()
 		c.virtualIP = ack.AssignedIP.To4()
 		c.prefixLen = ack.PrefixLen
+		if ack.MTU > 0 {
+			c.serverMTU = int(ack.MTU)
+		}
 		c.mu.Unlock()
 		atomic.StoreInt32(&c.registered, 1)
 

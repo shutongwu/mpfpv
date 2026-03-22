@@ -46,15 +46,22 @@ type Header struct {
 	Seq      uint32 // big-endian, per-clientID
 }
 
+// PathRTT is a single NIC name + RTT pair reported by the client.
+type PathRTT struct {
+	Name  string
+	RTTms uint16 // milliseconds
+}
+
 // HeartbeatPayload is the 16-byte heartbeat payload, optionally followed
-// by a variable-length device name string.
+// by a variable-length device name string and path RTT data.
 type HeartbeatPayload struct {
 	VirtualIP   net.IP   // 4 bytes IPv4
 	PrefixLen   uint8
 	SendMode    uint8
 	ReplyPort   uint16   // central recv socket port; 0 = use source port (legacy)
 	TeamKeyHash [8]byte
-	DeviceName  string   // optional, from extended payload (beyond 16 bytes)
+	DeviceName  string     // optional, from extended payload (beyond 16 bytes)
+	PathRTTs    []PathRTT  // optional, per-NIC RTT reported by client
 }
 
 // HeartbeatAckPayload is the 8-byte heartbeat ack payload.
@@ -62,4 +69,5 @@ type HeartbeatAckPayload struct {
 	AssignedIP net.IP // 4 bytes IPv4
 	PrefixLen  uint8
 	Status     uint8
+	MTU        uint16 // TUN MTU; 0 = use client default
 }
