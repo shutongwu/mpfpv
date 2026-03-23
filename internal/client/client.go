@@ -512,12 +512,14 @@ func (c *Client) recvLoopMultipath(ctx context.Context) {
 
 			if len(pkt.Data) < protocol.HeaderSize {
 				log.WithField("size", len(pkt.Data)).Warn("received packet too short, dropping")
+				protocol.PutBuf(pkt.Data)
 				continue
 			}
 
 			hdr, err := protocol.DecodeHeader(pkt.Data)
 			if err != nil {
 				log.WithError(err).Warn("failed to decode header")
+				protocol.PutBuf(pkt.Data)
 				continue
 			}
 
@@ -542,6 +544,7 @@ func (c *Client) recvLoopMultipath(ctx context.Context) {
 			default:
 				log.WithField("type", hdr.Type).Warn("received unknown packet type")
 			}
+			protocol.PutBuf(pkt.Data)
 		}
 	}
 }
@@ -610,11 +613,12 @@ func (c *Client) handleData(hdr protocol.Header, payload []byte) {
 	// Write to TUN if available. Copy payload first because the caller's
 	// buffer may be reused immediately after we return.
 	if c.tunDev != nil {
-		pkt := make([]byte, len(payload))
+		pkt := protocol.GetBuf(len(payload))
 		copy(pkt, payload)
 		if _, err := c.tunDev.Write(pkt); err != nil {
 			log.WithError(err).Warn("failed to write to TUN")
 		}
+		protocol.PutBuf(pkt)
 	}
 }
 

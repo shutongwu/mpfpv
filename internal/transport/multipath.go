@@ -612,7 +612,7 @@ func (m *MultiPathSender) perPathRecvLoop(p *Path) {
 		p.mu.Lock()
 		p.RxBytes += uint64(n)
 		p.mu.Unlock()
-		data := make([]byte, n)
+		data := protocol.GetBuf(n)
 		copy(data, buf[:n])
 		select {
 		case m.recvCh <- RecvPacket{Data: data, FromPath: p.IfaceName, Addr: addr}:
@@ -639,7 +639,7 @@ func (m *MultiPathSender) centralRecvLoop() {
 			time.Sleep(50 * time.Millisecond)
 			continue
 		}
-		data := make([]byte, n)
+		data := protocol.GetBuf(n)
 		copy(data, buf[:n])
 
 		select {

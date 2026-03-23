@@ -500,11 +500,12 @@ func (s *Server) handleData(hdr protocol.Header, payload []byte, from *net.UDPAd
 	// Check if destination is server itself — write to TUN.
 	if dstIP == s.serverVirtualIP {
 		if s.tunDev != nil {
-			pkt := make([]byte, len(payload))
+			pkt := protocol.GetBuf(len(payload))
 			copy(pkt, payload)
 			if _, err := s.tunDev.Write(pkt); err != nil {
 				log.Warnf("server: TUN write error: %v", err)
 			}
+			protocol.PutBuf(pkt)
 		} else {
 			log.Debugf("server: data for server virtualIP from clientID=%d (TUN not available)", clientID)
 		}
