@@ -177,7 +177,7 @@ func (c *Client) Run(ctx context.Context) error {
 			"iface": c.cfg.Client.BindInterface,
 			"addr":  localAddr,
 		}).Info("client: single NIC mode")
-	} else if !c.serverAddr.IP.IsLoopback() {
+	} else if !c.serverAddr.IP.IsLoopback() && c.conn == nil {
 		// Try to create MultiPathSender for multi-NIC support.
 		mp, err := transport.NewMultiPathSender(c.serverAddr, c.sendMode, c.cfg.Client.ExcludedInterfaces)
 		if err == nil {
@@ -624,6 +624,13 @@ func (c *Client) IsRegistered() bool {
 // Multipath returns the MultiPathSender if multipath mode is active, or nil.
 func (c *Client) Multipath() *transport.MultiPathSender {
 	return c.multipath
+}
+
+// SetConn sets a pre-created UDP connection. When set, Run() skips
+// multipath and socket creation entirely. Used by Android where
+// net.Interfaces() is blocked by SELinux.
+func (c *Client) SetConn(conn *net.UDPConn) {
+	c.conn = conn
 }
 
 // SocketFD returns the raw file descriptor of the client's UDP socket.

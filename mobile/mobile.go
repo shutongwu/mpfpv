@@ -4,6 +4,7 @@ package mobile
 import (
 	"context"
 	"encoding/json"
+	"fmt"
 	"net"
 	"sync"
 	"time"
@@ -67,26 +68,16 @@ func Start(serverAddr, teamKey, deviceName, machineID, webUIAddr string, cb TunC
 		cb.OnTunRequest(ip, prefixLen, mtu)
 	})
 
-	// Find the first usable network interface for single-socket mode.
-	// On Android, multipath doesn't work (interface names like rmnet0 aren't
-	// recognized, CGNAT IPs get filtered). Use BindInterface to force
-	// single-socket mode and skip multipath entirely.
-	// If no interface found, still set a dummy to trigger single-socket path
-	// but client.Run will fail on bind, so we handle that by not setting it.
-	bindIface := findActiveInterface()
-	log.Infof("mobile: active interface=%q", bindIface)
-
 	// Build config programmatically.
 	cfg := &config.Config{
 		Mode:    "client",
 		TeamKey: teamKey,
 		Client: &config.ClientConfig{
-			ServerAddr:    serverAddr,
-			SendMode:      "redundant",
-			MTU:           1400,
-			DedupWindow:   4096,
-			WebUI:         webUIAddr,
-			BindInterface: bindIface,
+			ServerAddr:  serverAddr,
+			SendMode:    "redundant",
+			MTU:         1400,
+			DedupWindow: 4096,
+			WebUI:       webUIAddr,
 		},
 	}
 	if deviceName != "" {
@@ -97,6 +88,16 @@ func Start(serverAddr, teamKey, deviceName, machineID, webUIAddr string, cb TunC
 	if err != nil {
 		return err
 	}
+
+	// On Android, net.Interfaces() is blocked by SELinux (netlink denied).
+	// Skip multipath entirely: create a plain UDP socket and let the OS
+	// route through whichever network is available.
+	conn, err := net.ListenUDP("udp", nil)
+	if err != nil {
+		return fmt.Errorf("mobile: listen UDP: %w", err)
+	}
+	c.SetConn(conn)
+	log.Info("mobile: using plain UDP socket (no multipath)")
 
 	ctx, cancelFunc := context.WithCancel(context.Background())
 
@@ -235,40 +236,3 @@ func GetStatusJSON() string {
 	return string(data)
 }
 
-// findActiveInterface returns the name of the first usable network interface
-// with an IPv4 address. This is used to force single-socket mode on Android.
-func findActiveInterface() string {
-	ifaces, err := net.Interfaces()
-	if err != nil {
-		return ""
-	}
-	for _, iface := range ifaces {
-		if iface.Flags&net.FlagUp == 0 || iface.Flags&net.FlagLoopback != 0 {
-			continue
-		}
-		addrs, err := iface.Addrs()
-		if err != nil {
-			continue
-		}
-		for _, addr := range addrs {
-			ipnet, ok := addr.(*net.IPNet)
-			if !ok {
-				continue
-			}
-			ip4 := ipnet.IP.To4()
-			if ip4 == nil {
-				continue
-			}
-			// Skip link-local and our VPN range only.
-			// Don't skip CGNAT — Android 4G/5G uses CGNAT addresses.
-			if ip4[0] == 169 && ip4[1] == 254 {
-				continue
-			}
-			if ip4[0] == 10 && ip4[1] == 99 {
-				continue
-			}
-			return iface.Name
-		}
-	}
-	return ""
-}
