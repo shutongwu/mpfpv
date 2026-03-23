@@ -48,6 +48,11 @@ type Client struct {
 	// when the corresponding HeartbeatAck arrives.
 	lastHeartbeatSent time.Time
 	hbTimeMu          sync.Mutex
+
+	// Virtual path for single-socket mode (Android).
+	// When set, heartbeat appends a single path entry with this name and measured RTT.
+	virtualPathName string
+	lastRTT         time.Duration
 }
 
 // stableClientID generates a deterministic clientID from a device name
@@ -412,6 +417,25 @@ func (c *Client) sendHeartbeat() error {
 			return fmt.Errorf("send heartbeat (multipath): %w", err)
 		}
 	} else {
+		// Append virtual path data if configured (Android single-socket mode).
+		if c.virtualPathName != "" {
+			c.hbTimeMu.Lock()
+			rttMs := uint16(c.lastRTT.Milliseconds())
+			c.hbTimeMu.Unlock()
+			nameBytes := []byte(c.virtualPathName)
+			suffix := make([]byte, 1+1+len(nameBytes)+2+4+4)
+			i := 0
+			suffix[i] = 0x00 // separator
+			i++
+			suffix[i] = byte(len(nameBytes))
+			i++
+			i += copy(suffix[i:], nameBytes)
+			suffix[i] = byte(rttMs >> 8)
+			suffix[i+1] = byte(rttMs)
+			i += 2
+			// tx/rx bytes: 0 for now
+			buf = append(buf, suffix...)
+		}
 		if _, err := c.conn.WriteToUDP(buf, c.serverAddr); err != nil {
 			return fmt.Errorf("send heartbeat: %w", err)
 		}
@@ -459,6 +483,14 @@ func (c *Client) recvLoop(ctx context.Context) {
 		switch hdr.Type {
 		case protocol.TypeHeartbeatAck:
 			c.handleHeartbeatAck(hdr, payload)
+			// Track RTT for virtual path (single-socket mode).
+			if c.virtualPathName != "" {
+				c.hbTimeMu.Lock()
+				if !c.lastHeartbeatSent.IsZero() {
+					c.lastRTT = time.Since(c.lastHeartbeatSent)
+				}
+				c.hbTimeMu.Unlock()
+			}
 		case protocol.TypeData:
 			c.handleData(hdr, payload)
 		default:
@@ -631,6 +663,13 @@ func (c *Client) Multipath() *transport.MultiPathSender {
 // net.Interfaces() is blocked by SELinux.
 func (c *Client) SetConn(conn *net.UDPConn) {
 	c.conn = conn
+}
+
+// SetVirtualPath sets a virtual path name for single-socket mode.
+// Heartbeats will include this path with measured RTT so the server
+// can display it.
+func (c *Client) SetVirtualPath(name string) {
+	c.virtualPathName = name
 }
 
 // SocketFD returns the raw file descriptor of the client's UDP socket.

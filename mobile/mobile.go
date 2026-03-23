@@ -97,6 +97,7 @@ func Start(serverAddr, teamKey, deviceName, machineID, webUIAddr string, cb TunC
 		return fmt.Errorf("mobile: listen UDP: %w", err)
 	}
 	c.SetConn(conn)
+	c.SetVirtualPath("Mobile")
 	log.Info("mobile: using plain UDP socket (no multipath)")
 
 	ctx, cancelFunc := context.WithCancel(context.Background())
