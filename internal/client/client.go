@@ -28,9 +28,9 @@ type Client struct {
 	conn        *net.UDPConn
 	serverAddr  *net.UDPAddr
 	dedup       *protocol.Deduplicator
-	teamKeyHash [8]byte
-	virtualIP   net.IP
-	prefixLen   uint8
+	teamKeyHash  [8]byte
+	virtualIPVal atomic.Value // stores net.IP; lock-free for hot-path reads
+	prefixLen    uint8
 	serverMTU   int // MTU from server HeartbeatAck; 0 = not received
 	sendMode    uint8
 	deviceName  string // device name sent in heartbeats
@@ -115,12 +115,12 @@ func New(cfg *config.Config) (*Client, error) {
 		serverAddr:  serverAddr,
 		dedup:       protocol.NewDeduplicator(dedupWindow),
 		teamKeyHash: teamKeyHash,
-		virtualIP:   virtualIP,
 		prefixLen:   prefixLen,
 		sendMode:    sendMode,
 		deviceName:  deviceName,
 		tunReady:    make(chan struct{}),
 	}
+	c.virtualIPVal.Store(virtualIP)
 
 	return c, nil
 }
@@ -128,8 +128,8 @@ func New(cfg *config.Config) (*Client, error) {
 // setupTUN creates and configures the TUN device. On failure it logs a warning
 // and returns the error; the client continues in UDP-only mode.
 func (c *Client) setupTUN() error {
+	vip := c.virtualIPVal.Load().(net.IP)
 	c.mu.Lock()
-	vip := c.virtualIP
 	pl := c.prefixLen
 	srvMTU := c.serverMTU
 	c.mu.Unlock()
@@ -316,9 +316,7 @@ func (c *Client) tunReadLoop(ctx context.Context) {
 		// On Windows, other TUN adapters (e.g. Clash Meta) may cause the OS
 		// to select a wrong source address. Force it to our assigned IP so
 		// the server's srcIP validation passes.
-		c.mu.Lock()
-		vip4 := c.virtualIP
-		c.mu.Unlock()
+		vip4 := c.virtualIPVal.Load().(net.IP)
 		if len(vip4) == 4 && !vip4.Equal(net.IPv4zero) {
 			copy(buf[protocol.HeaderSize+12:protocol.HeaderSize+16], vip4)
 			// Recalculate IPv4 header checksum after modifying source IP.
@@ -389,13 +387,14 @@ func (c *Client) sendHeartbeat() error {
 	}
 	protocol.EncodeHeader(buf, hdr)
 
+	vip := c.virtualIPVal.Load().(net.IP)
 	c.mu.Lock()
 	var replyPort uint16
 	if c.multipath != nil {
 		replyPort = c.multipath.RecvPort()
 	}
 	hb := &protocol.HeartbeatPayload{
-		VirtualIP:   c.virtualIP,
+		VirtualIP:   vip,
 		PrefixLen:   c.prefixLen,
 		SendMode:    c.sendMode,
 		ReplyPort:   replyPort,
@@ -559,8 +558,8 @@ func (c *Client) handleHeartbeatAck(hdr protocol.Header, payload []byte) {
 	case protocol.AckStatusOK:
 		wasRegistered := atomic.LoadInt32(&c.registered) == 1
 
+		c.virtualIPVal.Store(ack.AssignedIP.To4())
 		c.mu.Lock()
-		c.virtualIP = ack.AssignedIP.To4()
 		c.prefixLen = ack.PrefixLen
 		if ack.MTU > 0 {
 			c.serverMTU = int(ack.MTU)

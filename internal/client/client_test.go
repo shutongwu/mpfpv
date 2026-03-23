@@ -97,8 +97,8 @@ func TestNew(t *testing.T) {
 		t.Fatalf("New() error: %v", err)
 	}
 	// VirtualIP is always 0.0.0.0 (auto-assign mode).
-	if !c.virtualIP.Equal(net.IPv4zero) {
-		t.Errorf("virtualIP = %s, want 0.0.0.0", c.virtualIP)
+	if !c.virtualIPVal.Load().(net.IP).Equal(net.IPv4zero) {
+		t.Errorf("virtualIP = %s, want 0.0.0.0", c.virtualIPVal.Load().(net.IP))
 	}
 	if c.prefixLen != 0 {
 		t.Errorf("prefixLen = %d, want 0", c.prefixLen)
@@ -122,8 +122,8 @@ func TestNew_AutoIP(t *testing.T) {
 		t.Fatalf("New() error: %v", err)
 	}
 	// VirtualIP is always auto-assign (0.0.0.0).
-	if !c.virtualIP.Equal(net.IPv4zero) {
-		t.Errorf("virtualIP = %s, want 0.0.0.0", c.virtualIP)
+	if !c.virtualIPVal.Load().(net.IP).Equal(net.IPv4zero) {
+		t.Errorf("virtualIP = %s, want 0.0.0.0", c.virtualIPVal.Load().(net.IP))
 	}
 	if c.prefixLen != 0 {
 		t.Errorf("prefixLen = %d, want 0", c.prefixLen)
@@ -197,7 +197,7 @@ func TestHeartbeatEncoding(t *testing.T) {
 	protocol.EncodeHeader(buf, hdr)
 
 	hb := &protocol.HeartbeatPayload{
-		VirtualIP:   c.virtualIP,
+		VirtualIP:   c.virtualIPVal.Load().(net.IP),
 		PrefixLen:   c.prefixLen,
 		SendMode:    c.sendMode,
 		TeamKeyHash: c.teamKeyHash,
@@ -272,8 +272,8 @@ func TestHandleHeartbeatAck_OK(t *testing.T) {
 	}
 	c.mu.Lock()
 	defer c.mu.Unlock()
-	if !c.virtualIP.Equal(net.IPv4(10, 99, 0, 42).To4()) {
-		t.Errorf("virtualIP = %s, want 10.99.0.42", c.virtualIP)
+	if !c.virtualIPVal.Load().(net.IP).Equal(net.IPv4(10, 99, 0, 42).To4()) {
+		t.Errorf("virtualIP = %s, want 10.99.0.42", c.virtualIPVal.Load().(net.IP))
 	}
 	if c.prefixLen != 24 {
 		t.Errorf("prefixLen = %d, want 24", c.prefixLen)
@@ -707,8 +707,8 @@ func TestAutoAssignTUNCreation(t *testing.T) {
 	}
 
 	// Verify virtualIP is 0.0.0.0 (auto-assign).
-	if !c.virtualIP.Equal(net.IPv4zero) {
-		t.Fatalf("virtualIP = %s, want 0.0.0.0", c.virtualIP)
+	if !c.virtualIPVal.Load().(net.IP).Equal(net.IPv4zero) {
+		t.Fatalf("virtualIP = %s, want 0.0.0.0", c.virtualIPVal.Load().(net.IP))
 	}
 
 	// Simulate receiving a HeartbeatAck OK with an assigned IP.
@@ -749,8 +749,8 @@ func TestAutoAssignTUNCreation(t *testing.T) {
 
 	// virtualIP should be updated.
 	c.mu.Lock()
-	if !c.virtualIP.Equal(net.IPv4(10, 99, 0, 5).To4()) {
-		t.Errorf("virtualIP = %s, want 10.99.0.5", c.virtualIP)
+	if !c.virtualIPVal.Load().(net.IP).Equal(net.IPv4(10, 99, 0, 5).To4()) {
+		t.Errorf("virtualIP = %s, want 10.99.0.5", c.virtualIPVal.Load().(net.IP))
 	}
 	c.mu.Unlock()
 }

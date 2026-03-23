@@ -2,6 +2,7 @@ package client
 
 import (
 	"fmt"
+	"net"
 	"sync/atomic"
 	"time"
 
@@ -11,11 +12,12 @@ import (
 
 // GetStatus returns the client's current connection status.
 func (c *Client) GetStatus() web.StatusInfo {
-	c.mu.Lock()
+	vipIP := c.virtualIPVal.Load().(net.IP)
 	vip := ""
-	if c.virtualIP != nil {
-		vip = c.virtualIP.String()
+	if vipIP != nil {
+		vip = vipIP.String()
 	}
+	c.mu.Lock()
 	sm := c.sendMode
 	c.mu.Unlock()
 
