@@ -1,5 +1,3 @@
-//go:build android
-
 // Package mobile provides gomobile-bindable API for the mpfpv Android client.
 package mobile
 
