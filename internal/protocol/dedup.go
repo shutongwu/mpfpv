@@ -4,6 +4,7 @@ import "sync"
 
 // clientState holds per-clientID deduplication state.
 type clientState struct {
+	mu     sync.Mutex // per-client lock, eliminates cross-client contention
 	maxSeq uint32
 	bitmap []uint64 // bit array, indexed by seq % windowSize
 	inited bool
@@ -11,7 +12,7 @@ type clientState struct {
 
 // Deduplicator performs per-clientID sliding-window sequence deduplication.
 type Deduplicator struct {
-	mu         sync.Mutex
+	mu         sync.RWMutex // protects the clients map only
 	windowSize uint32
 	clients    map[uint16]*clientState
 }
@@ -31,16 +32,27 @@ func NewDeduplicator(windowSize int) *Deduplicator {
 // IsDuplicate returns true if the packet should be discarded (duplicate),
 // false if it is a new packet that should be processed.
 func (d *Deduplicator) IsDuplicate(clientID uint16, seq uint32) bool {
-	d.mu.Lock()
-	defer d.mu.Unlock()
-
+	// Fast path: read-lock map lookup.
+	d.mu.RLock()
 	cs, ok := d.clients[clientID]
+	d.mu.RUnlock()
+
 	if !ok {
-		cs = &clientState{
-			bitmap: make([]uint64, (d.windowSize+63)/64),
+		// Slow path: write-lock to insert new client.
+		d.mu.Lock()
+		cs, ok = d.clients[clientID]
+		if !ok {
+			cs = &clientState{
+				bitmap: make([]uint64, (d.windowSize+63)/64),
+			}
+			d.clients[clientID] = cs
 		}
-		d.clients[clientID] = cs
+		d.mu.Unlock()
 	}
+
+	// Per-client lock: different clients never contend.
+	cs.mu.Lock()
+	defer cs.mu.Unlock()
 
 	if !cs.inited {
 		cs.inited = true
