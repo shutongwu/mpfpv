@@ -16,6 +16,10 @@ import (
 
 // TunCallback is implemented by the Android Java/Kotlin layer.
 type TunCallback interface {
+	// OnProtectSocket is called with the UDP socket fd before VPN is established.
+	// Java must call VpnService.protect(fd) to prevent routing loop.
+	OnProtectSocket(fd int)
+
 	// OnTunRequest is called when the Go client needs a TUN device.
 	// Java should create VpnService.Builder with the given IP/prefix/MTU,
 	// call establish(), and then call SetTunFD() with the resulting fd.
@@ -47,7 +51,18 @@ func Start(serverAddr, teamKey, deviceName, machineID, webUIAddr string, cb TunC
 	client.SetAndroidMachineID(machineID)
 
 	// Register TUN request callback: bridge from tunnel package to Java callback.
+	// Before creating the VPN, protect the UDP socket to prevent routing loop.
 	tunnel.SetTunRequestCallback(func(ip string, prefixLen int, mtu int) {
+		mu.Lock()
+		c := cli
+		mu.Unlock()
+		if c != nil {
+			fd := c.SocketFD()
+			if fd >= 0 {
+				cb.OnProtectSocket(fd)
+				log.Infof("mobile: protected socket fd=%d", fd)
+			}
+		}
 		cb.OnTunRequest(ip, prefixLen, mtu)
 	})
 

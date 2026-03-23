@@ -626,6 +626,23 @@ func (c *Client) Multipath() *transport.MultiPathSender {
 	return c.multipath
 }
 
+// SocketFD returns the raw file descriptor of the client's UDP socket.
+// Returns -1 if the socket is not yet created. Used by Android VpnService.protect().
+func (c *Client) SocketFD() int {
+	if c.conn == nil {
+		return -1
+	}
+	rawConn, err := c.conn.SyscallConn()
+	if err != nil {
+		return -1
+	}
+	fd := -1
+	rawConn.Control(func(s uintptr) {
+		fd = int(s)
+	})
+	return fd
+}
+
 // resolveInterfaceAddr finds the first IPv4 address on the named interface.
 func resolveInterfaceAddr(ifaceName string) (net.IP, error) {
 	iface, err := net.InterfaceByName(ifaceName)
