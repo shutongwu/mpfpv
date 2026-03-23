@@ -339,14 +339,17 @@ func (s *Server) handleHeartbeat(hdr protocol.Header, payload []byte, from *net.
 	prefixLen := hb.PrefixLen
 
 	s.sessionsLock.Lock()
-	defer s.sessionsLock.Unlock()
 
 	// Check clientID conflict: same clientID but different virtualIP.
 	if existing, ok := s.sessions[clientID]; ok {
 		if !vip.Equal(net.IPv4zero) && !existing.VirtualIP.Equal(vip) {
+			conflictVIP := make(net.IP, len(existing.VirtualIP))
+			copy(conflictVIP, existing.VirtualIP)
+			conflictPrefix := existing.PrefixLen
+			s.sessionsLock.Unlock()
 			log.Warnf("server: clientID=%d conflict: registered IP=%s, heartbeat IP=%s from %s",
-				clientID, existing.VirtualIP, vip, from)
-			s.sendHeartbeatAck(from, existing.VirtualIP, existing.PrefixLen, protocol.AckStatusClientIDConflict)
+				clientID, conflictVIP, vip, from)
+			s.sendHeartbeatAck(from, conflictVIP, conflictPrefix, protocol.AckStatusClientIDConflict)
 			return
 		}
 	}
@@ -429,7 +432,13 @@ func (s *Server) handleHeartbeat(hdr protocol.Header, payload []byte, from *net.
 		ai.NICRxBytes = p.RxBytes
 	}
 
-	s.sendHeartbeatAck(from, session.VirtualIP, session.PrefixLen, protocol.AckStatusOK)
+	// Copy values needed for ack before releasing lock.
+	ackVIP := session.VirtualIP
+	ackPrefix := session.PrefixLen
+	s.sessionsLock.Unlock()
+
+	// Send ack outside the lock to avoid blocking data forwarding.
+	s.sendHeartbeatAck(from, ackVIP, ackPrefix, protocol.AckStatusOK)
 }
 
 // handleData processes a Data message.
@@ -585,7 +594,7 @@ func (s *Server) sendToClient(clientID uint16, rawPacket []byte) {
 func (s *Server) sendHeartbeatAck(to *net.UDPAddr, assignedIP net.IP, prefixLen uint8, status uint8) {
 	buf := make([]byte, protocol.HeaderSize+protocol.HeartbeatAckPayloadSize)
 
-	seq := atomic.AddUint32(&s.seq, 1)
+	seq := atomic.AddUint32(&s.seq, 1) - 1
 	protocol.EncodeHeader(buf, &protocol.Header{
 		Version:  protocol.Version1,
 		Type:     protocol.TypeHeartbeatAck,
@@ -767,32 +776,47 @@ func (s *Server) cleanupLoop(ctx context.Context) {
 func (s *Server) cleanup() {
 	now := time.Now()
 
-	s.sessionsLock.Lock()
-	defer s.sessionsLock.Unlock()
+	type addrRemoval struct {
+		clientID uint16
+		addrKey  string
+	}
+	type sessRemoval struct {
+		clientID uint16
+		ip       net.IP
+	}
+	var expiredAddrs []addrRemoval
+	var expiredSessions []sessRemoval
 
+	// Hold the lock only for mutation; collect info for logging/cleanup outside.
+	s.sessionsLock.Lock()
 	for clientID, session := range s.sessions {
-		// Remove expired addresses.
 		for addrKey, ai := range session.Addrs {
 			if now.Sub(ai.LastSeen) > s.addrTimeout {
 				delete(session.Addrs, addrKey)
-				log.Infof("server: clientID=%d addr %s timed out", clientID, addrKey)
+				expiredAddrs = append(expiredAddrs, addrRemoval{clientID, addrKey})
 			}
 		}
-
-		// If all addresses expired and session itself is timed out, remove session.
 		if len(session.Addrs) == 0 && now.Sub(session.LastSeen) > s.clientTimeout {
-			// Remove from route table.
 			ip4 := session.VirtualIP.To4()
-			if ip4 != nil {
-				var key [4]byte
-				copy(key[:], ip4)
-				s.routeLock.Lock()
-				delete(s.routeTable, key)
-				s.routeLock.Unlock()
-			}
 			delete(s.sessions, clientID)
-			s.dedup.Reset(clientID)
-			log.Infof("server: clientID=%d session timed out, removed", clientID)
+			expiredSessions = append(expiredSessions, sessRemoval{clientID, ip4})
 		}
+	}
+	s.sessionsLock.Unlock()
+
+	// Log and clean up route/dedup outside the lock.
+	for _, a := range expiredAddrs {
+		log.Infof("server: clientID=%d addr %s timed out", a.clientID, a.addrKey)
+	}
+	for _, sr := range expiredSessions {
+		if sr.ip != nil {
+			var key [4]byte
+			copy(key[:], sr.ip)
+			s.routeLock.Lock()
+			delete(s.routeTable, key)
+			s.routeLock.Unlock()
+		}
+		s.dedup.Reset(sr.clientID)
+		log.Infof("server: clientID=%d session timed out, removed", sr.clientID)
 	}
 }
