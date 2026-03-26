@@ -6,7 +6,9 @@ import (
 	"encoding/json"
 	"fmt"
 	"net"
+	"runtime/debug"
 	"sync"
+	"syscall"
 	"time"
 
 	"github.com/cloud/mpfpv/internal/client"
@@ -89,6 +91,9 @@ func Start(serverAddr, teamKey, deviceName, machineID, webUIAddr string, cb TunC
 		return err
 	}
 
+	// Reduce GC pause jitter — less frequent GC, smaller latency spikes.
+	debug.SetGCPercent(300)
+
 	// On Android, net.Interfaces() is blocked by SELinux (netlink denied).
 	// Skip multipath entirely: create a plain UDP socket and let the OS
 	// route through whichever network is available.
@@ -96,6 +101,18 @@ func Start(serverAddr, teamKey, deviceName, machineID, webUIAddr string, cb TunC
 	if err != nil {
 		return fmt.Errorf("mobile: listen UDP: %w", err)
 	}
+
+	// Set socket options for low latency.
+	if rawConn, err := conn.SyscallConn(); err == nil {
+		rawConn.Control(func(fd uintptr) {
+			// Larger socket buffers to avoid drops.
+			syscall.SetsockoptInt(int(fd), syscall.SOL_SOCKET, syscall.SO_RCVBUF, 512*1024)
+			syscall.SetsockoptInt(int(fd), syscall.SOL_SOCKET, syscall.SO_SNDBUF, 512*1024)
+			// TOS: low delay.
+			syscall.SetsockoptInt(int(fd), syscall.IPPROTO_IP, syscall.IP_TOS, 0x10)
+		})
+	}
+
 	c.SetConn(conn)
 	c.SetVirtualPath("Mobile")
 	log.Info("mobile: using plain UDP socket (no multipath)")
