@@ -366,6 +366,10 @@ func (c *Client) heartbeatLoop(ctx context.Context) {
 			if err := c.sendHeartbeat(); err != nil {
 				log.WithError(err).Warn("failed to send heartbeat")
 			}
+			// Check for stale NAT mappings and recycle sockets if needed.
+			if c.useMultipath {
+				c.multipath.CheckAndRecycleStalePaths()
+			}
 		}
 	}
 }
@@ -692,7 +696,8 @@ func (c *Client) SocketFD() int {
 	return fd
 }
 
-// resolveInterfaceAddr finds the first IPv4 address on the named interface.
+// resolveInterfaceAddr finds a usable IP address on the named interface.
+// Prefers IPv4; falls back to global/ULA IPv6 if no IPv4 is available.
 func resolveInterfaceAddr(ifaceName string) (net.IP, error) {
 	iface, err := net.InterfaceByName(ifaceName)
 	if err != nil {
@@ -702,6 +707,7 @@ func resolveInterfaceAddr(ifaceName string) (net.IP, error) {
 	if err != nil {
 		return nil, fmt.Errorf("get addrs for %q: %w", ifaceName, err)
 	}
+	// First pass: prefer IPv4.
 	for _, addr := range addrs {
 		var ip net.IP
 		switch v := addr.(type) {
@@ -714,7 +720,32 @@ func resolveInterfaceAddr(ifaceName string) (net.IP, error) {
 			return ip4, nil
 		}
 	}
-	return nil, fmt.Errorf("no IPv4 address on interface %q", ifaceName)
+	// Second pass: accept global/ULA IPv6.
+	for _, addr := range addrs {
+		var ip net.IP
+		switch v := addr.(type) {
+		case *net.IPNet:
+			ip = v.IP
+		case *net.IPAddr:
+			ip = v.IP
+		}
+		if ip == nil {
+			continue
+		}
+		ip6 := ip.To16()
+		if ip6 == nil {
+			continue
+		}
+		// Skip link-local (fe80::/10).
+		if ip6[0] == 0xfe && ip6[1]&0xc0 == 0x80 {
+			continue
+		}
+		// Accept global unicast (2000::/3) or ULA (fc00::/7).
+		if (ip6[0]&0xe0 == 0x20) || (ip6[0]&0xfe == 0xfc) {
+			return ip6, nil
+		}
+	}
+	return nil, fmt.Errorf("no usable IP address on interface %q", ifaceName)
 }
 
 // recalcIPv4Checksum recalculates the IPv4 header checksum in-place.

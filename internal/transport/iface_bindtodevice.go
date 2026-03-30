@@ -11,11 +11,18 @@ import (
 
 // createBoundUDPConn creates a UDP connection bound to a specific network
 // interface using SO_BINDTODEVICE on Linux. The socket is also bound to the
-// given local address.
+// given local address. Supports both IPv4 and IPv6 addresses.
 func createBoundUDPConn(localAddr net.IP, ifaceName string) (*net.UDPConn, error) {
 	laddr := &net.UDPAddr{IP: localAddr, Port: 0}
 
-	s, err := syscall.Socket(syscall.AF_INET, syscall.SOCK_DGRAM, syscall.IPPROTO_UDP)
+	// Determine address family from localAddr.
+	isIPv6 := localAddr.To4() == nil
+	af := syscall.AF_INET
+	if isIPv6 {
+		af = syscall.AF_INET6
+	}
+
+	s, err := syscall.Socket(af, syscall.SOCK_DGRAM, syscall.IPPROTO_UDP)
 	if err != nil {
 		return nil, fmt.Errorf("socket create (iface=%s): %w", ifaceName, err)
 	}
@@ -41,10 +48,19 @@ func createBoundUDPConn(localAddr net.IP, ifaceName string) (*net.UDPConn, error
 		return nil, fmt.Errorf("SO_SNDTIMEO (iface=%s): %w", ifaceName, err)
 	}
 
-	lsa := syscall.SockaddrInet4{Port: laddr.Port}
-	copy(lsa.Addr[:], laddr.IP.To4())
+	// Bind to the appropriate sockaddr type.
+	var sa syscall.Sockaddr
+	if isIPv6 {
+		lsa := syscall.SockaddrInet6{Port: laddr.Port}
+		copy(lsa.Addr[:], localAddr.To16())
+		sa = &lsa
+	} else {
+		lsa := syscall.SockaddrInet4{Port: laddr.Port}
+		copy(lsa.Addr[:], localAddr.To4())
+		sa = &lsa
+	}
 
-	if err := syscall.Bind(s, &lsa); err != nil {
+	if err := syscall.Bind(s, sa); err != nil {
 		syscall.Close(s)
 		return nil, fmt.Errorf("bind (iface=%s, addr=%v): %w", ifaceName, laddr, err)
 	}

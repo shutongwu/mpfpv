@@ -51,11 +51,12 @@ type StatusInfo struct {
 
 // InterfaceStatus describes a single network interface (client-side).
 type InterfaceStatus struct {
-	Name     string `json:"name"`
-	LocalIP  string `json:"localIP"`
-	Status   string `json:"status"`   // "active", "suspect", "down"
-	RTT      string `json:"rtt"`      // e.g. "12ms"
-	IsActive bool   `json:"isActive"` // failover: marks the current active card
+	Name         string `json:"name"`
+	LocalIP      string `json:"localIP"`
+	Status       string `json:"status"`       // "active", "suspect", "down"
+	RTT          string `json:"rtt"`           // e.g. "12ms"
+	IsActive     bool   `json:"isActive"`      // failover: marks the current active card
+	RecycleCount int    `json:"recycleCount"`  // socket recycle count (stale NAT recovery)
 }
 
 // RouteEntry is a virtualIP -> clientID mapping (server-side).

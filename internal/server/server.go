@@ -137,12 +137,12 @@ func (s *Server) Run(ctx context.Context) error {
 	// Try to create TUN device before listening on UDP.
 	s.initTUN()
 
-	addr, err := net.ResolveUDPAddr("udp4", s.cfg.Server.ListenAddr)
+	addr, err := net.ResolveUDPAddr("udp", s.cfg.Server.ListenAddr)
 	if err != nil {
 		return fmt.Errorf("server: resolve listen addr: %w", err)
 	}
 
-	conn, err := net.ListenUDP("udp4", addr)
+	conn, err := net.ListenUDP("udp", addr)
 	if err != nil {
 		return fmt.Errorf("server: listen: %w", err)
 	}

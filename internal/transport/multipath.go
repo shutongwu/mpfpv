@@ -25,6 +25,19 @@ const (
 
 	// recvBufSize is the per-goroutine receive buffer size.
 	recvBufSize = 65535
+
+	// pathStaleTimeout is how long without receiving any packet before
+	// considering a path's NAT mapping stale. 5 missed 1-second heartbeat acks.
+	pathStaleTimeout = 5 * time.Second
+
+	// recycleMinInterval is the minimum time between socket recycling attempts.
+	recycleMinInterval = 10 * time.Second
+
+	// recycleMaxAttempts is the maximum consecutive recycles before backing off.
+	recycleMaxAttempts = 3
+
+	// recycleBackoffDuration is the backoff after hitting recycleMaxAttempts.
+	recycleBackoffDuration = 60 * time.Second
 )
 
 // PathStatus represents the health state of a network path.
@@ -59,11 +72,13 @@ type Path struct {
 	rttSamples []time.Duration // last N RTT samples
 	LastRecv   time.Time       // last time a packet was received on this path
 	Status     PathStatus
-	missCount  int // consecutive heartbeat misses
-	TxBytes    uint64 // bytes sent through this path
-	RxBytes    uint64 // bytes received on this path
-	mu         sync.Mutex
-	closed     chan struct{} // closed when path is deliberately removed; used by perPathRecvLoop
+	missCount    int    // consecutive heartbeat misses
+	TxBytes      uint64 // bytes sent through this path
+	RxBytes      uint64 // bytes received on this path
+	lastRecycled time.Time // last socket recycle time
+	recycleCount int       // consecutive recycles without recovery
+	mu           sync.Mutex
+	closed       chan struct{} // closed when path is deliberately removed; used by perPathRecvLoop
 }
 
 // RecvPacket is a packet received from the server on any path.
@@ -75,14 +90,15 @@ type RecvPacket struct {
 
 // PathInfo is a read-only snapshot of a Path for external consumers (Web UI).
 type PathInfo struct {
-	IfaceName string
-	LocalAddr string
-	RTT       time.Duration
-	LastRecv  time.Time
-	Status    string
-	IsActive  bool // true if this is the active path in failover mode
-	TxBytes   uint64
-	RxBytes   uint64
+	IfaceName    string
+	LocalAddr    string
+	RTT          time.Duration
+	LastRecv     time.Time
+	Status       string
+	IsActive     bool // true if this is the active path in failover mode
+	TxBytes      uint64
+	RxBytes      uint64
+	RecycleCount int
 }
 
 // MultiPathSender manages sending data over multiple network interfaces.
@@ -126,9 +142,15 @@ func NewMultiPathSender(serverAddr *net.UDPAddr, sendMode uint8, excluded []stri
 func (m *MultiPathSender) Start() error {
 	// Create central unbound receive socket. This socket is not tied to any
 	// NIC, so it survives NIC removal events without interruption.
-	recvConn, err := net.ListenUDP("udp4", &net.UDPAddr{IP: net.IPv4zero, Port: 0})
+	// Try dual-stack first (IPv6 socket receives both IPv4 and IPv6).
+	recvConn, err := net.ListenUDP("udp6", &net.UDPAddr{IP: net.IPv6zero, Port: 0})
 	if err != nil {
-		return fmt.Errorf("transport: create recv socket: %w", err)
+		// Fallback to IPv4-only (e.g., IPv6 disabled in kernel).
+		recvConn, err = net.ListenUDP("udp4", &net.UDPAddr{IP: net.IPv4zero, Port: 0})
+		if err != nil {
+			return fmt.Errorf("transport: create recv socket: %w", err)
+		}
+		log.Info("central recv socket: IPv4-only (IPv6 not available)")
 	}
 	m.recvConn = recvConn
 	m.recvPort = uint16(recvConn.LocalAddr().(*net.UDPAddr).Port)
@@ -313,6 +335,7 @@ func (m *MultiPathSender) UpdateRTT(ifaceName string, rtt time.Duration) {
 	p.RTT = averageDuration(p.rttSamples)
 	p.LastRecv = time.Now()
 	p.missCount = 0
+	p.recycleCount = 0 // recovery: reset consecutive recycle counter
 	p.Status = PathActive
 	p.mu.Unlock()
 
@@ -359,14 +382,15 @@ func (m *MultiPathSender) GetPaths() []PathInfo {
 	for _, p := range m.paths {
 		p.mu.Lock()
 		pi := PathInfo{
-			IfaceName: p.IfaceName,
-			LocalAddr: p.LocalAddr.String(),
-			RTT:       p.RTT,
-			LastRecv:  p.LastRecv,
-			Status:    p.Status.String(),
-			IsActive:  p.IfaceName == m.activePath,
-			TxBytes:   p.TxBytes,
-			RxBytes:   p.RxBytes,
+			IfaceName:    p.IfaceName,
+			LocalAddr:    p.LocalAddr.String(),
+			RTT:          p.RTT,
+			LastRecv:     p.LastRecv,
+			Status:       p.Status.String(),
+			IsActive:     p.IfaceName == m.activePath,
+			TxBytes:      p.TxBytes,
+			RxBytes:      p.RxBytes,
+			RecycleCount: p.recycleCount,
 		}
 		p.mu.Unlock()
 		out = append(out, pi)
@@ -527,11 +551,22 @@ func (m *MultiPathSender) onInterfaceChange(added, removed []InterfaceInfo) {
 }
 
 // addPath creates a new Path for the given interface info.
+// Address family is selected to match the server address.
 func (m *MultiPathSender) addPath(info *InterfaceInfo) {
-	if len(info.Addrs) == 0 {
-		return
+	var localAddr net.IP
+	if m.serverAddr.IP.To4() != nil {
+		// Server is IPv4: use IPv4 addresses.
+		if len(info.Addrs) == 0 {
+			return
+		}
+		localAddr = info.Addrs[0]
+	} else {
+		// Server is IPv6: use IPv6 addresses.
+		if len(info.Addrs6) == 0 {
+			return
+		}
+		localAddr = info.Addrs6[0]
 	}
-	localAddr := info.Addrs[0] // Use the first IPv4 address.
 
 	conn, err := createBoundUDPConn(localAddr, info.Name)
 	if err != nil {
@@ -651,6 +686,105 @@ func (m *MultiPathSender) centralRecvLoop() {
 		case <-m.stopCh:
 			return
 		}
+	}
+}
+
+// recyclePath closes the old socket for the named path and creates a fresh one
+// with a new random ephemeral port, forcing a new NAT mapping.
+func (m *MultiPathSender) recyclePath(name string) {
+	m.mu.Lock()
+	p, ok := m.paths[name]
+	if !ok {
+		m.mu.Unlock()
+		return
+	}
+
+	oldConn := p.Conn
+	oldClosed := p.closed
+
+	// Close old socket and signal old perPathRecvLoop to exit.
+	close(oldClosed)
+	oldConn.Close()
+
+	// Create a new socket on the same interface.
+	conn, err := createBoundUDPConn(p.LocalAddr, p.IfaceName)
+	if err != nil {
+		p.mu.Lock()
+		p.Status = PathDown
+		p.mu.Unlock()
+		m.mu.Unlock()
+		log.WithFields(log.Fields{
+			"iface": name,
+		}).WithError(err).Warn("recyclePath: failed to create new socket, marking down")
+		return
+	}
+
+	// Swap socket in-place.
+	p.mu.Lock()
+	p.Conn = conn
+	p.closed = make(chan struct{})
+	p.Status = PathActive
+	p.lastRecycled = time.Now()
+	p.recycleCount++
+	p.mu.Unlock()
+
+	// Start new receive loop.
+	m.wg.Add(1)
+	go m.perPathRecvLoop(p)
+
+	m.mu.Unlock()
+
+	log.WithFields(log.Fields{
+		"iface":        name,
+		"recycleCount": p.recycleCount,
+		"newPort":      conn.LocalAddr().(*net.UDPAddr).Port,
+	}).Info("path socket recycled (stale NAT)")
+}
+
+// CheckAndRecycleStalePaths detects paths with stale NAT mappings and
+// recreates their sockets. Should be called from the heartbeat loop.
+func (m *MultiPathSender) CheckAndRecycleStalePaths() {
+	m.mu.RLock()
+	var stale []string
+	now := time.Now()
+	for name, p := range m.paths {
+		p.mu.Lock()
+		status := p.Status
+		lastRecv := p.LastRecv
+		lastRecycled := p.lastRecycled
+		rc := p.recycleCount
+		p.mu.Unlock()
+
+		if status == PathDown {
+			// Even down paths can be retried after backoff.
+			if rc >= recycleMaxAttempts && now.Sub(lastRecycled) > recycleBackoffDuration {
+				stale = append(stale, name)
+			}
+			continue
+		}
+
+		// Not stale yet.
+		if now.Sub(lastRecv) <= pathStaleTimeout {
+			continue
+		}
+		// Hit max attempts → mark down, will retry after backoff.
+		if rc >= recycleMaxAttempts {
+			p.mu.Lock()
+			p.Status = PathDown
+			p.mu.Unlock()
+			log.WithField("iface", name).Warn("path marked down after max recycle attempts")
+			continue
+		}
+		// Cooldown between recycles.
+		if !lastRecycled.IsZero() && now.Sub(lastRecycled) <= recycleMinInterval {
+			continue
+		}
+		stale = append(stale, name)
+	}
+	m.mu.RUnlock()
+
+	for _, name := range stale {
+		m.recyclePath(name)
 	}
 }
 

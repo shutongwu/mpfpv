@@ -11,5 +11,9 @@ import (
 // address binding to route traffic through the correct interface.
 func createBoundUDPConn(localAddr net.IP, ifaceName string) (*net.UDPConn, error) {
 	laddr := &net.UDPAddr{IP: localAddr, Port: 0}
-	return net.ListenUDP("udp4", laddr)
+	network := "udp4"
+	if localAddr.To4() == nil {
+		network = "udp6"
+	}
+	return net.ListenUDP(network, laddr)
 }

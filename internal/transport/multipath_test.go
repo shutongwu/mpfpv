@@ -491,3 +491,199 @@ func TestGetPaths(t *testing.T) {
 		t.Error("expected IsActive=true for failover active path")
 	}
 }
+
+func TestCheckAndRecycleStalePaths_DetectsStale(t *testing.T) {
+	addr, _ := net.ResolveUDPAddr("udp", "127.0.0.1:19800")
+	m, _ := NewMultiPathSender(addr, protocol.SendModeRedundant, nil)
+	m.stopCh = make(chan struct{})
+
+	conn, _ := net.ListenUDP("udp", &net.UDPAddr{IP: net.IPv4(127, 0, 0, 1), Port: 0})
+	oldPort := conn.LocalAddr().(*net.UDPAddr).Port
+
+	m.mu.Lock()
+	m.paths["eth0"] = &Path{
+		IfaceName: "eth0",
+		LocalAddr: net.IPv4(127, 0, 0, 1),
+		Conn:      conn,
+		Status:    PathActive,
+		LastRecv:  time.Now().Add(-10 * time.Second), // stale
+		closed:    make(chan struct{}),
+	}
+	m.mu.Unlock()
+
+	m.CheckAndRecycleStalePaths()
+
+	m.mu.RLock()
+	p := m.paths["eth0"]
+	m.mu.RUnlock()
+
+	p.mu.Lock()
+	newPort := p.Conn.LocalAddr().(*net.UDPAddr).Port
+	rc := p.recycleCount
+	p.mu.Unlock()
+
+	if newPort == oldPort {
+		t.Error("expected socket to be recycled with new port")
+	}
+	if rc != 1 {
+		t.Errorf("expected recycleCount=1, got %d", rc)
+	}
+
+	// Clean up.
+	p.Conn.Close()
+}
+
+func TestRecycleResetOnRecovery(t *testing.T) {
+	addr, _ := net.ResolveUDPAddr("udp", "127.0.0.1:19800")
+	m, _ := NewMultiPathSender(addr, protocol.SendModeRedundant, nil)
+
+	conn, _ := net.ListenUDP("udp", &net.UDPAddr{IP: net.IPv4(127, 0, 0, 1), Port: 0})
+	defer conn.Close()
+
+	m.mu.Lock()
+	m.paths["wlan0"] = &Path{
+		IfaceName:    "wlan0",
+		LocalAddr:    net.IPv4(10, 0, 0, 2),
+		Conn:         conn,
+		Status:       PathActive,
+		recycleCount: 2,
+		closed:       make(chan struct{}),
+	}
+	m.mu.Unlock()
+
+	m.UpdateRTT("wlan0", 30*time.Millisecond)
+
+	m.mu.RLock()
+	p := m.paths["wlan0"]
+	m.mu.RUnlock()
+
+	p.mu.Lock()
+	if p.recycleCount != 0 {
+		t.Errorf("expected recycleCount reset to 0 after RTT update, got %d", p.recycleCount)
+	}
+	p.mu.Unlock()
+}
+
+func TestRecycleBackoff(t *testing.T) {
+	addr, _ := net.ResolveUDPAddr("udp", "127.0.0.1:19800")
+	m, _ := NewMultiPathSender(addr, protocol.SendModeRedundant, nil)
+	m.stopCh = make(chan struct{})
+
+	conn, _ := net.ListenUDP("udp", &net.UDPAddr{IP: net.IPv4(127, 0, 0, 1), Port: 0})
+
+	m.mu.Lock()
+	m.paths["eth0"] = &Path{
+		IfaceName:    "eth0",
+		LocalAddr:    net.IPv4(127, 0, 0, 1),
+		Conn:         conn,
+		Status:       PathActive,
+		LastRecv:     time.Now().Add(-10 * time.Second),
+		recycleCount: recycleMaxAttempts, // already at max
+		lastRecycled: time.Now().Add(-5 * time.Second), // recent
+		closed:       make(chan struct{}),
+	}
+	m.mu.Unlock()
+
+	m.CheckAndRecycleStalePaths()
+
+	m.mu.RLock()
+	p := m.paths["eth0"]
+	m.mu.RUnlock()
+
+	p.mu.Lock()
+	if p.Status != PathDown {
+		t.Errorf("expected PathDown after max recycle attempts, got %v", p.Status)
+	}
+	// recycleCount should not have increased (no recycle happened).
+	if p.recycleCount != recycleMaxAttempts {
+		t.Errorf("expected recycleCount=%d (unchanged), got %d", recycleMaxAttempts, p.recycleCount)
+	}
+	p.mu.Unlock()
+	conn.Close()
+}
+
+func TestAddPath_IPv4Preferred(t *testing.T) {
+	addr, _ := net.ResolveUDPAddr("udp", "127.0.0.1:19800")
+	m, _ := NewMultiPathSender(addr, protocol.SendModeRedundant, nil)
+	m.stopCh = make(chan struct{})
+
+	info := &InterfaceInfo{
+		Name:   "lo",
+		Addrs:  []net.IP{net.IPv4(127, 0, 0, 1)},
+		Addrs6: []net.IP{net.IPv6loopback},
+		IsUp:   true,
+	}
+	m.addPath(info)
+
+	m.mu.RLock()
+	p, ok := m.paths["lo"]
+	m.mu.RUnlock()
+
+	if !ok {
+		t.Fatal("expected path to be created")
+	}
+	p.mu.Lock()
+	addr4 := p.LocalAddr.To4()
+	p.mu.Unlock()
+
+	if addr4 == nil {
+		t.Error("expected IPv4 address to be selected when server is IPv4")
+	}
+	p.Conn.Close()
+}
+
+func TestAddPath_IPv6Fallback(t *testing.T) {
+	addr, _ := net.ResolveUDPAddr("udp", "[::1]:19800")
+	m, _ := NewMultiPathSender(addr, protocol.SendModeRedundant, nil)
+	m.stopCh = make(chan struct{})
+
+	info := &InterfaceInfo{
+		Name:   "lo",
+		Addrs:  []net.IP{net.IPv4(127, 0, 0, 1)},
+		Addrs6: []net.IP{net.IPv6loopback},
+		IsUp:   true,
+	}
+	m.addPath(info)
+
+	m.mu.RLock()
+	p, ok := m.paths["lo"]
+	m.mu.RUnlock()
+
+	if !ok {
+		t.Fatal("expected path to be created for IPv6 server")
+	}
+	p.mu.Lock()
+	isIPv6 := p.LocalAddr.To4() == nil
+	p.mu.Unlock()
+
+	if !isIPv6 {
+		t.Error("expected IPv6 address to be selected when server is IPv6")
+	}
+	p.Conn.Close()
+}
+
+func TestGetPaths_IncludesRecycleCount(t *testing.T) {
+	addr, _ := net.ResolveUDPAddr("udp", "127.0.0.1:19800")
+	m, _ := NewMultiPathSender(addr, protocol.SendModeRedundant, nil)
+
+	conn, _ := net.ListenUDP("udp", &net.UDPAddr{IP: net.IPv4(127, 0, 0, 1), Port: 0})
+	defer conn.Close()
+
+	m.mu.Lock()
+	m.paths["eth0"] = &Path{
+		IfaceName:    "eth0",
+		LocalAddr:    net.IPv4(10, 0, 0, 1),
+		Conn:         conn,
+		Status:       PathActive,
+		recycleCount: 3,
+	}
+	m.mu.Unlock()
+
+	infos := m.GetPaths()
+	if len(infos) != 1 {
+		t.Fatalf("expected 1 path, got %d", len(infos))
+	}
+	if infos[0].RecycleCount != 3 {
+		t.Errorf("expected RecycleCount=3, got %d", infos[0].RecycleCount)
+	}
+}

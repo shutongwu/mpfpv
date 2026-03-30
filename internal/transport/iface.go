@@ -9,11 +9,12 @@ import (
 	log "github.com/sirupsen/logrus"
 )
 
-// InterfaceInfo describes a network interface and its IPv4 addresses.
+// InterfaceInfo describes a network interface and its addresses.
 type InterfaceInfo struct {
-	Name  string
-	Addrs []net.IP // IPv4 addresses on this interface
-	IsUp  bool
+	Name   string
+	Addrs  []net.IP // IPv4 addresses on this interface
+	Addrs6 []net.IP // IPv6 global/ULA addresses on this interface
+	IsUp   bool
 }
 
 // InterfaceWatcher monitors network interface changes and invokes a callback
@@ -119,7 +120,7 @@ func (w *InterfaceWatcher) detectChanges() {
 	// Detect address changes (treat as remove + add).
 	for name, newInfo := range newSet {
 		if oldInfo, exists := w.current[name]; exists {
-			if !sameAddrs(oldInfo.Addrs, newInfo.Addrs) {
+			if !sameAddrs(oldInfo.Addrs, newInfo.Addrs) || !sameAddrs(oldInfo.Addrs6, newInfo.Addrs6) {
 				removed = append(removed, *oldInfo)
 				added = append(added, *newInfo)
 			}
@@ -177,8 +178,8 @@ func isPhysicalInterface(name string) bool {
 }
 
 // scanInterfaces returns the set of usable network interfaces with IPv4
-// addresses, excluding loopback, down, excluded, virtual devices, and
-// those without IPv4.
+// and/or IPv6 addresses, excluding loopback, down, excluded, and virtual
+// devices.
 func (w *InterfaceWatcher) scanInterfaces() map[string]*InterfaceInfo {
 	ifaces, err := net.Interfaces()
 	if err != nil {
@@ -213,6 +214,7 @@ func (w *InterfaceWatcher) scanInterfaces() map[string]*InterfaceInfo {
 		}
 
 		var ipv4s []net.IP
+		var ipv6s []net.IP
 		for _, addr := range addrs {
 			var ip net.IP
 			switch v := addr.(type) {
@@ -224,33 +226,53 @@ func (w *InterfaceWatcher) scanInterfaces() map[string]*InterfaceInfo {
 			if ip == nil {
 				continue
 			}
-			ip4 := ip.To4()
-			if ip4 == nil {
+
+			// IPv4 path.
+			if ip4 := ip.To4(); ip4 != nil {
+				// Skip link-local (169.254.x.x).
+				if ip4[0] == 169 && ip4[1] == 254 {
+					continue
+				}
+				// Skip CGNAT/Tailscale (100.64.0.0/10).
+				if ip4[0] == 100 && ip4[1] >= 64 && ip4[1] <= 127 {
+					continue
+				}
+				// Skip our own virtual IP range (10.99.x.x).
+				if ip4[0] == 10 && ip4[1] == 99 {
+					continue
+				}
+				ipv4s = append(ipv4s, ip4)
 				continue
 			}
-			// Skip link-local (169.254.x.x).
-			if ip4[0] == 169 && ip4[1] == 254 {
+
+			// IPv6 path.
+			ip6 := ip.To16()
+			if ip6 == nil {
 				continue
 			}
-			// Skip CGNAT/Tailscale (100.64.0.0/10).
-			if ip4[0] == 100 && ip4[1] >= 64 && ip4[1] <= 127 {
+			// Skip link-local (fe80::/10).
+			if ip6[0] == 0xfe && ip6[1]&0xc0 == 0x80 {
 				continue
 			}
-			// Skip our own virtual IP range (10.99.x.x).
-			if ip4[0] == 10 && ip4[1] == 99 {
+			// Skip loopback (::1).
+			if ip6.Equal(net.IPv6loopback) {
 				continue
 			}
-			ipv4s = append(ipv4s, ip4)
+			// Accept global unicast (2000::/3) and ULA (fc00::/7).
+			if (ip6[0]&0xe0 == 0x20) || (ip6[0]&0xfe == 0xfc) {
+				ipv6s = append(ipv6s, ip6)
+			}
 		}
 
-		if len(ipv4s) == 0 {
+		if len(ipv4s) == 0 && len(ipv6s) == 0 {
 			continue
 		}
 
 		result[name] = &InterfaceInfo{
-			Name:  name,
-			Addrs: ipv4s,
-			IsUp:  true,
+			Name:   name,
+			Addrs:  ipv4s,
+			Addrs6: ipv6s,
+			IsUp:   true,
 		}
 	}
 	return result

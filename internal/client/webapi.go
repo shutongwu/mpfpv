@@ -48,11 +48,12 @@ func (c *Client) GetInterfaces() []web.InterfaceStatus {
 			rttStr = p.RTT.Round(time.Millisecond).String()
 		}
 		result = append(result, web.InterfaceStatus{
-			Name:     p.IfaceName,
-			LocalIP:  p.LocalAddr,
-			Status:   p.Status,
-			RTT:      rttStr,
-			IsActive: p.IsActive,
+			Name:         p.IfaceName,
+			LocalIP:      p.LocalAddr,
+			Status:       p.Status,
+			RTT:          rttStr,
+			IsActive:     p.IsActive,
+			RecycleCount: p.RecycleCount,
 		})
 	}
 	return result

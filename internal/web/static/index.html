@@ -273,7 +273,7 @@ button.danger:hover { background: #4a1525; border-color: #f85149; }
         statusHtml += '<div class="card"><span class="loading">No interfaces (single socket mode)</span></div>';
       } else {
         statusHtml += '<div class="card"><table><thead><tr>';
-        statusHtml += '<th>Name</th><th>Local IP</th><th>Status</th><th>RTT</th><th>Active</th><th></th>';
+        statusHtml += '<th>Name</th><th>Local IP</th><th>Status</th><th>RTT</th><th>Recycles</th><th>Active</th><th></th>';
         statusHtml += '</tr></thead><tbody>';
         for (var i = 0; i < ifaces.length; i++) {
           var iface = ifaces[i];
@@ -283,11 +283,15 @@ button.danger:hover { background: #4a1525; border-color: #f85149; }
               ? '<span class="badge badge-yellow">suspect</span>'
               : '<span class="badge badge-red">down</span>';
           var activeMark = iface.isActive ? '<span class="active-marker">&#9679;</span>' : '';
+          var recycleStr = (iface.recycleCount || 0) > 0
+            ? '<span class="badge badge-yellow">' + iface.recycleCount + '</span>'
+            : '0';
           statusHtml += '<tr>';
           statusHtml += '<td>' + esc(iface.name) + '</td>';
           statusHtml += '<td>' + esc(iface.localIP) + '</td>';
           statusHtml += '<td>' + statusBadge + '</td>';
           statusHtml += '<td>' + esc(iface.rtt) + '</td>';
+          statusHtml += '<td>' + recycleStr + '</td>';
           statusHtml += '<td>' + activeMark + '</td>';
           statusHtml += '<td><button onclick="mpfpv.toggleIface(\'' + esc(iface.name) + '\')">Toggle</button></td>';
           statusHtml += '</tr>';
@@ -395,7 +399,7 @@ button.danger:hover { background: #4a1525; border-color: #f85149; }
       html += '<div class="card"><span class="loading">No interfaces (single socket mode)</span></div>';
     } else {
       html += '<div class="card"><table><thead><tr>';
-      html += '<th>Name</th><th>Local IP</th><th>Status</th><th>RTT</th><th>Active</th><th></th>';
+      html += '<th>Name</th><th>Local IP</th><th>Status</th><th>RTT</th><th>Recycles</th><th>Active</th><th></th>';
       html += '</tr></thead><tbody>';
       for (var i = 0; i < ifaces.length; i++) {
         var iface = ifaces[i];
@@ -405,11 +409,15 @@ button.danger:hover { background: #4a1525; border-color: #f85149; }
             ? '<span class="badge badge-yellow">suspect</span>'
             : '<span class="badge badge-red">down</span>';
         var activeMark = iface.isActive ? '<span class="active-marker">&#9679;</span>' : '';
+        var recycleStr = (iface.recycleCount || 0) > 0
+          ? '<span class="badge badge-yellow">' + iface.recycleCount + '</span>'
+          : '0';
         html += '<tr>';
         html += '<td>' + esc(iface.name) + '</td>';
         html += '<td>' + esc(iface.localIP) + '</td>';
         html += '<td>' + statusBadge + '</td>';
         html += '<td>' + esc(iface.rtt) + '</td>';
+        html += '<td>' + recycleStr + '</td>';
         html += '<td>' + activeMark + '</td>';
         html += '<td><button onclick="mpfpv.toggleIface(\'' + esc(iface.name) + '\')">Toggle</button></td>';
         html += '</tr>';

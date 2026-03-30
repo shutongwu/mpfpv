@@ -950,3 +950,65 @@ func TestAddrTimeoutPartial(t *testing.T) {
 		t.Fatalf("conn2 received data despite its address being expired (%d bytes)", n)
 	}
 }
+
+// TestIPv6_HeartbeatRoundtrip verifies that a server listening on [::1] can
+// handle heartbeats from an IPv6 client and reply with HeartbeatAck.
+func TestIPv6_HeartbeatRoundtrip(t *testing.T) {
+	teamKey := "ipv6-test"
+
+	// Start server on IPv6 loopback.
+	tmpConn, err := net.ListenPacket("udp6", "[::1]:0")
+	if err != nil {
+		t.Skip("IPv6 not available, skipping")
+	}
+	listenAddr := tmpConn.LocalAddr().String()
+	tmpConn.Close()
+
+	cfg := &config.Config{
+		Mode:    "server",
+		TeamKey: teamKey,
+		Server: &config.ServerConfig{
+			ListenAddr:    listenAddr,
+			VirtualIP:     "10.99.0.254/24",
+			Subnet:        "10.99.0.0/24",
+			ClientTimeout: 15,
+			AddrTimeout:   5,
+			DedupWindow:   4096,
+			MTU:           1300,
+			IPPoolFile:    filepath.Join(os.TempDir(), fmt.Sprintf("mpfpv_ipv6_pool_%d.json", time.Now().UnixNano())),
+		},
+	}
+
+	srv, err := server.New(cfg)
+	if err != nil {
+		t.Fatalf("server.New: %v", err)
+	}
+	ctx, cancel := context.WithCancel(context.Background())
+	defer cancel()
+	go func() { _ = srv.Run(ctx) }()
+	time.Sleep(50 * time.Millisecond)
+
+	// Create IPv6 client socket.
+	srvAddr, _ := net.ResolveUDPAddr("udp6", listenAddr)
+	clientConn, err := net.ListenUDP("udp6", &net.UDPAddr{IP: net.IPv6loopback, Port: 0})
+	if err != nil {
+		t.Fatalf("client listen: %v", err)
+	}
+	defer clientConn.Close()
+
+	// Send heartbeat.
+	hb := buildHeartbeat(100, 0, net.IPv4zero, 24, protocol.SendModeRedundant, teamKey)
+	if _, err := clientConn.WriteToUDP(hb, srvAddr); err != nil {
+		t.Fatalf("send heartbeat: %v", err)
+	}
+
+	// Read HeartbeatAck.
+	hdr, _, err := readPacket(clientConn, 2*time.Second)
+	if err != nil {
+		t.Fatalf("no heartbeat ack received over IPv6: %v", err)
+	}
+	if hdr.Type != protocol.TypeHeartbeatAck {
+		t.Fatalf("expected HeartbeatAck, got type %d", hdr.Type)
+	}
+	t.Logf("IPv6 heartbeat roundtrip OK: server=%s", listenAddr)
+}
