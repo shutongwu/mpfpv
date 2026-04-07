@@ -28,8 +28,8 @@ client:
   #   "failover"  — send via best interface, auto-switch on failure
   sendMode: redundant
 
-  # TUN device MTU. Default: 1300.
-  mtu: 1300
+  # TUN device MTU. Default: 1400.
+  mtu: 1400
 
   # Deduplication sliding window size. Default: 4096.
   # Larger values tolerate longer network delays at the cost of memory.
@@ -68,8 +68,8 @@ client:
 #   # Deduplication sliding window size. Default: 4096.
 #   dedupWindow: 4096
 #
-#   # TUN device MTU. Default: 1300.
-#   mtu: 1300
+#   # TUN device MTU. Default: 1400.
+#   mtu: 1400
 #
 #   # File to persist automatic IP allocations across restarts.
 #   ipPoolFile: "ip_pool.json"

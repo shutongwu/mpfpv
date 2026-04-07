@@ -19,8 +19,8 @@ func TestConfigDefaults(t *testing.T) {
 		cfg.Name = DefaultName
 	}
 
-	if cfg.MTU != 1300 {
-		t.Errorf("expected default MTU 1300, got %d", cfg.MTU)
+	if cfg.MTU != 1400 {
+		t.Errorf("expected default MTU 1400, got %d", cfg.MTU)
 	}
 	if cfg.Name != "mpfpv0" {
 		t.Errorf("expected default name mpfpv0, got %s", cfg.Name)
@@ -50,8 +50,8 @@ func TestConfigCustomValues(t *testing.T) {
 }
 
 func TestDefaultConstants(t *testing.T) {
-	if DefaultMTU != 1300 {
-		t.Errorf("DefaultMTU should be 1300, got %d", DefaultMTU)
+	if DefaultMTU != 1400 {
+		t.Errorf("DefaultMTU should be 1400, got %d", DefaultMTU)
 	}
 	if DefaultName != "mpfpv0" {
 		t.Errorf("DefaultName should be mpfpv0, got %s", DefaultName)

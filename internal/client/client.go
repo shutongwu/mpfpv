@@ -131,17 +131,9 @@ func (c *Client) setupTUN() error {
 	vip := c.virtualIPVal.Load().(net.IP)
 	c.mu.Lock()
 	pl := c.prefixLen
-	srvMTU := c.serverMTU
 	c.mu.Unlock()
 
-	// Prefer server-provided MTU, fall back to client config.
-	mtu := srvMTU
-	if mtu <= 0 {
-		mtu = c.cfg.Client.MTU
-	}
-	if mtu <= 0 {
-		mtu = tunnel.DefaultMTU
-	}
+	mtu := tunnel.DefaultMTU
 
 	dev, err := tunnel.CreateTUN(tunnel.Config{
 		Name:      tunnel.DefaultName,
@@ -274,18 +266,7 @@ func (c *Client) tunReadLoop(ctx context.Context) {
 		return
 	}
 
-	c.mu.Lock()
-	srvMTU2 := c.serverMTU
-	c.mu.Unlock()
-	mtu := srvMTU2
-	if mtu <= 0 {
-		mtu = c.cfg.Client.MTU
-	}
-	if mtu <= 0 {
-		mtu = tunnel.DefaultMTU
-	}
-
-	buf := make([]byte, mtu+protocol.HeaderSize)
+	buf := make([]byte, tunnel.DefaultMTU+protocol.HeaderSize)
 	for {
 		select {
 		case <-ctx.Done():

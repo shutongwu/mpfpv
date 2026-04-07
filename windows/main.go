@@ -21,7 +21,7 @@ var defaultConfig = config.Config{
 	TeamKey: "",
 	Client: &config.ClientConfig{
 		SendMode: "redundant",
-		MTU:      1300,
+		MTU:      1400,
 	},
 }
 

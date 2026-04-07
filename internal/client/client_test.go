@@ -24,7 +24,7 @@ func testConfig(serverAddr string) *config.Config {
 			DeviceName:  "test-device",
 			ServerAddr:  serverAddr,
 			SendMode:    "redundant",
-			MTU:         1300,
+			MTU:         1400,
 			DedupWindow: 4096,
 		},
 	}

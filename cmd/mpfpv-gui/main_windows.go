@@ -39,7 +39,7 @@ func main() {
 			Client: &config.ClientConfig{
 				ClientID: 1,
 				SendMode: "redundant",
-				MTU:      1300,
+				MTU:      1400,
 			},
 		}
 	}

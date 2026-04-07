@@ -57,9 +57,7 @@ func (c *Controller) SaveConfig(cfg *config.Config) error {
 		if cfg.Client.SendMode == "" {
 			cfg.Client.SendMode = "redundant"
 		}
-		if cfg.Client.MTU == 0 {
-			cfg.Client.MTU = 1300
-		}
+		cfg.Client.MTU = 1400 // fixed
 		if cfg.Client.DedupWindow == 0 {
 			cfg.Client.DedupWindow = 4096
 		}

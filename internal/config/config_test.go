@@ -41,8 +41,8 @@ server:
 	if cfg.Server.DedupWindow != 4096 {
 		t.Errorf("dedupWindow = %d, want 4096", cfg.Server.DedupWindow)
 	}
-	if cfg.Server.MTU != 1300 {
-		t.Errorf("mtu = %d, want 1300", cfg.Server.MTU)
+	if cfg.Server.MTU != 1400 {
+		t.Errorf("mtu = %d, want 1400", cfg.Server.MTU)
 	}
 	if cfg.Server.IPPoolFile != "ip_pool.json" {
 		t.Errorf("ipPoolFile = %q, want ip_pool.json", cfg.Server.IPPoolFile)

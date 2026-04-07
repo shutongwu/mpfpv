@@ -8,5 +8,5 @@ server:
   clientTimeout: 30
   addrTimeout: 10
   dedupWindow: 4096
-  mtu: 1300
+  mtu: 1400
   ipPoolFile: "/tmp/mpfpv_tun_test_pool.json"

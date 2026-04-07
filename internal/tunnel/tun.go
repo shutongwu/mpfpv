@@ -17,13 +17,13 @@ type Device interface {
 // Config holds the configuration for creating a TUN device.
 type Config struct {
 	Name      string // Desired device name (Linux honours this; other platforms may ignore it).
-	MTU       int    // MTU, default 1300.
+	MTU       int    // MTU, fixed 1400.
 	VirtualIP net.IP // Virtual IP address to assign.
 	PrefixLen int    // Subnet prefix length, e.g. 24.
 }
 
-// DefaultMTU is the default MTU when none is specified.
-const DefaultMTU = 1300
+// DefaultMTU is the fixed MTU for all mpfpv TUN devices.
+const DefaultMTU = 1400
 
 // DefaultName is the default TUN device name.
 const DefaultName = "mpfpv0"

@@ -3,7 +3,7 @@ package protocol
 import "sync"
 
 // DefaultBufSize is the default capacity for pooled buffers.
-// Sized to fit MTU (1300-1500) + HeaderSize (8) + margin.
+// Sized to fit MTU (1400) + HeaderSize (8) + margin.
 const DefaultBufSize = 2048
 
 var bufPool = sync.Pool{

@@ -13,7 +13,7 @@ import (
 func TestCreateTUN(t *testing.T) {
 	cfg := Config{
 		Name:      "mpfpvtest0",
-		MTU:       1300,
+		MTU:       1400,
 		VirtualIP: net.IPv4(10, 199, 0, 1),
 		PrefixLen: 24,
 	}

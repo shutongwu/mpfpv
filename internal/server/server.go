@@ -392,6 +392,17 @@ func (s *Server) handleHeartbeat(hdr protocol.Header, payload []byte, from *net.
 			s.routeLock.Lock()
 			s.routeTable[key] = clientID
 			s.routeLock.Unlock()
+
+			// Ensure client-provided IP is persisted in IP pool.
+			s.ipPoolLock.Lock()
+			if _, pooled := s.ipPool[clientID]; !pooled {
+				s.ipPool[clientID] = assignedIP
+				if hb.DeviceName != "" {
+					s.ipPoolNames[clientID] = hb.DeviceName
+				}
+				s.saveIPPool()
+			}
+			s.ipPoolLock.Unlock()
 		}
 
 		log.Infof("server: new client registered: clientID=%d virtualIP=%s sendMode=%d deviceName=%q from %s",

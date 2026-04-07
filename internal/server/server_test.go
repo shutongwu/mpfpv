@@ -27,7 +27,7 @@ func testConfig() *config.Config {
 			ClientTimeout: 15,
 			AddrTimeout:   5,
 			DedupWindow:   4096,
-			MTU:           1300,
+			MTU:           1400,
 		},
 	}
 }

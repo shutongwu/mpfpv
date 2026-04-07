@@ -43,7 +43,7 @@ func startServer(t *testing.T, teamKey string, clientTimeout, addrTimeout int) (
 			ClientTimeout: clientTimeout,
 			AddrTimeout:   addrTimeout,
 			DedupWindow:   4096,
-			MTU:           1300,
+			MTU:           1400,
 			IPPoolFile:    filepath.Join(os.TempDir(), fmt.Sprintf("mpfpv_test_pool_%d.json", time.Now().UnixNano())),
 		},
 	}
@@ -974,7 +974,7 @@ func TestIPv6_HeartbeatRoundtrip(t *testing.T) {
 			ClientTimeout: 15,
 			AddrTimeout:   5,
 			DedupWindow:   4096,
-			MTU:           1300,
+			MTU:           1400,
 			IPPoolFile:    filepath.Join(os.TempDir(), fmt.Sprintf("mpfpv_ipv6_pool_%d.json", time.Now().UnixNano())),
 		},
 	}

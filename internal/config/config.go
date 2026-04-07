@@ -82,9 +82,7 @@ func applyDefaults(cfg *Config) {
 		if cfg.Client.SendMode == "" {
 			cfg.Client.SendMode = "redundant"
 		}
-		if cfg.Client.MTU == 0 {
-			cfg.Client.MTU = 1300
-		}
+		cfg.Client.MTU = 1400 // fixed, not configurable
 		if cfg.Client.DedupWindow == 0 {
 			cfg.Client.DedupWindow = 4096
 		}
@@ -100,9 +98,7 @@ func applyDefaults(cfg *Config) {
 		if cfg.Server.DedupWindow == 0 {
 			cfg.Server.DedupWindow = 4096
 		}
-		if cfg.Server.MTU == 0 {
-			cfg.Server.MTU = 1300
-		}
+		cfg.Server.MTU = 1400 // fixed, not configurable
 		if cfg.Server.IPPoolFile == "" {
 			cfg.Server.IPPoolFile = "ip_pool.json"
 		}
@@ -159,10 +155,6 @@ func (cc *ClientConfig) validate() error {
 		return fmt.Errorf("config: client.sendMode must be \"redundant\" or \"failover\", got %q", cc.SendMode)
 	}
 
-	if cc.MTU < 576 || cc.MTU > 9000 {
-		return fmt.Errorf("config: client.mtu must be between 576 and 9000, got %d", cc.MTU)
-	}
-
 	return nil
 }
 
@@ -186,10 +178,6 @@ func (sc *ServerConfig) validate() error {
 	}
 	if _, _, err := net.ParseCIDR(sc.Subnet); err != nil {
 		return fmt.Errorf("config: server.subnet invalid CIDR: %w", err)
-	}
-
-	if sc.MTU < 576 || sc.MTU > 9000 {
-		return fmt.Errorf("config: server.mtu must be between 576 and 9000, got %d", sc.MTU)
 	}
 
 	return nil
