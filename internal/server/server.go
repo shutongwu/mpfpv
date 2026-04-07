@@ -426,6 +426,15 @@ func (s *Server) handleHeartbeat(hdr protocol.Header, payload []byte, from *net.
 	// Store per-NIC data if this heartbeat carries it.
 	if len(hb.PathRTTs) > 0 {
 		p := hb.PathRTTs[0]
+		// Remove stale addresses with the same NIC name (interface reconnected with new port).
+		if p.Name != "" {
+			for oldKey, oldAI := range session.Addrs {
+				if oldKey != addrKey && oldAI.NICName == p.Name {
+					delete(session.Addrs, oldKey)
+					log.Debugf("server: clientID=%d removed stale addr %s for NIC %s", clientID, oldKey, p.Name)
+				}
+			}
+		}
 		ai.NICName = p.Name
 		ai.NICRTTms = p.RTTms
 		ai.NICTxBytes = p.TxBytes
