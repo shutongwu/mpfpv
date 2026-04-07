@@ -1,0 +1,266 @@
+<!DOCTYPE html>
+<html lang="zh-CN">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0">
+<title>mpfpv</title>
+<style>
+*, *::before, *::after { box-sizing: border-box; margin: 0; padding: 0; }
+body {
+  font-family: 'Segoe UI', 'SF Pro', -apple-system, sans-serif;
+  background: #0d1117; color: #c9d1d9;
+  padding: 24px; max-width: 460px; margin: 0 auto;
+  font-size: 14px; line-height: 1.5;
+  user-select: none;
+}
+
+h1 { font-size: 22px; color: #58a6ff; margin-bottom: 4px; }
+.subtitle { font-size: 12px; color: #8b949e; margin-bottom: 20px; }
+
+.card {
+  background: #161b22; border: 1px solid #30363d; border-radius: 8px;
+  padding: 16px; margin-bottom: 16px;
+}
+
+label {
+  display: block; font-size: 12px; color: #8b949e;
+  text-transform: uppercase; letter-spacing: 0.5px;
+  margin-bottom: 4px;
+}
+
+input[type="text"], select {
+  width: 100%; padding: 8px 12px;
+  background: #0d1117; color: #e6edf3;
+  border: 1px solid #30363d; border-radius: 6px;
+  font-size: 14px; outline: none;
+  appearance: none; -webkit-appearance: none;
+}
+input:focus, select:focus { border-color: #58a6ff; }
+
+select {
+  cursor: pointer;
+  background-image: url("data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' width='12' height='12' fill='%238b949e' viewBox='0 0 16 16'%3E%3Cpath d='M8 11L3 6h10z'/%3E%3C/svg%3E");
+  background-repeat: no-repeat;
+  background-position: right 12px center;
+  padding-right: 32px;
+}
+select option { background: #161b22; color: #e6edf3; }
+
+.input-group { margin-bottom: 12px; }
+
+.connect-btn {
+  width: 100%; padding: 12px;
+  font-size: 16px; font-weight: 600;
+  border: none; border-radius: 8px;
+  cursor: pointer; transition: background 0.2s;
+}
+.connect-btn.off { background: #238636; color: #fff; }
+.connect-btn.off:hover { background: #2ea043; }
+.connect-btn.on { background: #da3633; color: #fff; }
+.connect-btn.on:hover { background: #f85149; }
+.connect-btn:disabled { background: #21262d; color: #8b949e; cursor: not-allowed; }
+
+.status-row {
+  display: flex; justify-content: space-between;
+  align-items: center; padding: 6px 0;
+  border-bottom: 1px solid #21262d;
+}
+.status-row:last-child { border-bottom: none; }
+.status-label { font-size: 12px; color: #8b949e; }
+.status-value { font-size: 14px; font-weight: 600; color: #e6edf3; }
+
+.badge {
+  display: inline-block; padding: 2px 10px; border-radius: 12px;
+  font-size: 12px; font-weight: 600;
+}
+.badge-green { background: #0d4429; color: #3fb950; }
+.badge-red { background: #4a1525; color: #f85149; }
+.badge-yellow { background: #3d2e00; color: #d29922; }
+
+.error-text {
+  color: #f85149; font-size: 13px;
+  margin-top: 8px; word-break: break-all;
+}
+</style>
+</head>
+<body>
+
+<h1>mpfpv</h1>
+<div class="subtitle">Simplified Client</div>
+
+<!-- Config -->
+<div class="card">
+  <div class="input-group">
+    <label for="serverAddr">Server Address</label>
+    <input type="text" id="serverAddr" placeholder="cloudfpv.top:9800">
+  </div>
+  <div class="input-group">
+    <label for="teamKey">Team Key</label>
+    <input type="text" id="teamKey" placeholder="shared secret">
+  </div>
+  <div class="input-group">
+    <label for="nicSelect">Network Interface</label>
+    <select id="nicSelect"><option value="">Loading...</option></select>
+  </div>
+  <button class="connect-btn off" id="connectBtn" onclick="toggleConnect()">Connect</button>
+</div>
+
+<!-- Status -->
+<div class="card" id="statusCard">
+  <div class="status-row">
+    <span class="status-label">Status</span>
+    <span id="statusBadge" class="badge badge-red">Disconnected</span>
+  </div>
+  <div class="status-row">
+    <span class="status-label">Virtual IP</span>
+    <span class="status-value" id="virtualIP">-</span>
+  </div>
+  <div class="status-row" id="nicRow" style="display:none;">
+    <span class="status-label">Bound NIC</span>
+    <span class="status-value" id="nicInfo">-</span>
+  </div>
+  <div id="errorBox" class="error-text" style="display:none;"></div>
+</div>
+
+<script>
+let connected = false;
+let connecting = false;
+
+async function fetchJSON(url, opts) {
+  try {
+    const r = await fetch(url, opts);
+    return await r.json();
+  } catch (e) {
+    return null;
+  }
+}
+
+async function loadInterfaces() {
+  const sel = document.getElementById('nicSelect');
+  const nics = await fetchJSON('/api/interfaces');
+  sel.innerHTML = '';
+  if (!nics || nics.error || !nics.length) {
+    sel.innerHTML = '<option value="">No interface found</option>';
+    return;
+  }
+  nics.forEach(nic => {
+    const opt = document.createElement('option');
+    opt.value = nic.name;
+    opt.textContent = nic.name + ' (' + nic.ip + ')';
+    sel.appendChild(opt);
+  });
+  return nics;
+}
+
+async function loadConfig() {
+  const cfg = await fetchJSON('/api/config');
+  if (cfg) {
+    if (cfg.serverAddr) document.getElementById('serverAddr').value = cfg.serverAddr;
+    if (cfg.teamKey) document.getElementById('teamKey').value = cfg.teamKey;
+    // Pre-select saved NIC.
+    if (cfg.bindInterface) {
+      const sel = document.getElementById('nicSelect');
+      for (let i = 0; i < sel.options.length; i++) {
+        if (sel.options[i].value === cfg.bindInterface) {
+          sel.selectedIndex = i;
+          break;
+        }
+      }
+    }
+  }
+}
+
+async function refreshStatus() {
+  const s = await fetchJSON('/api/status');
+  if (!s) return;
+
+  connected = s.connected;
+  const badge = document.getElementById('statusBadge');
+  const btn = document.getElementById('connectBtn');
+  const vip = document.getElementById('virtualIP');
+  const errBox = document.getElementById('errorBox');
+  const nicRow = document.getElementById('nicRow');
+  const nicInfo = document.getElementById('nicInfo');
+
+  if (s.connected) {
+    badge.className = 'badge badge-green';
+    badge.textContent = 'Connected';
+    btn.className = 'connect-btn on';
+    btn.textContent = 'Disconnect';
+    btn.disabled = false;
+    connecting = false;
+  } else if (connecting) {
+    badge.className = 'badge badge-yellow';
+    badge.textContent = 'Connecting...';
+    btn.disabled = true;
+    btn.textContent = 'Connecting...';
+  } else {
+    badge.className = 'badge badge-red';
+    badge.textContent = 'Disconnected';
+    btn.className = 'connect-btn off';
+    btn.textContent = 'Connect';
+    btn.disabled = false;
+  }
+
+  vip.textContent = s.virtualIP || '-';
+
+  if (s.nicName) {
+    nicInfo.textContent = s.nicName;
+    nicRow.style.display = '';
+  } else {
+    nicRow.style.display = 'none';
+  }
+
+  if (s.error) {
+    errBox.textContent = s.error;
+    errBox.style.display = 'block';
+    connecting = false;
+    btn.disabled = false;
+    btn.className = 'connect-btn off';
+    btn.textContent = 'Connect';
+  } else {
+    errBox.style.display = 'none';
+  }
+}
+
+async function toggleConnect() {
+  if (connected) {
+    await fetchJSON('/api/disconnect', { method: 'POST' });
+    connected = false;
+    connecting = false;
+    refreshStatus();
+  } else {
+    const addr = document.getElementById('serverAddr').value.trim();
+    const key = document.getElementById('teamKey').value.trim();
+    const nic = document.getElementById('nicSelect').value;
+    if (!addr || !key) {
+      document.getElementById('errorBox').textContent = 'Please fill in server address and team key';
+      document.getElementById('errorBox').style.display = 'block';
+      return;
+    }
+    if (!nic) {
+      document.getElementById('errorBox').textContent = 'Please select a network interface';
+      document.getElementById('errorBox').style.display = 'block';
+      return;
+    }
+    connecting = true;
+    refreshStatus();
+    const res = await fetchJSON('/api/connect', {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ serverAddr: addr, teamKey: key, bindInterface: nic })
+    });
+    if (res && res.error) {
+      connecting = false;
+    }
+    refreshStatus();
+  }
+}
+
+// Init.
+loadInterfaces().then(() => loadConfig());
+refreshStatus();
+setInterval(refreshStatus, 2000);
+</script>
+</body>
+</html>
